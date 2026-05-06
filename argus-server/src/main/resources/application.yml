@@ -1,0 +1,104 @@
+server:
+  port: 8900
+
+spring:
+  application:
+    name: argus-server
+
+  # ==================== 数据源 ====================
+  datasource:
+    url: jdbc:mysql://localhost:3306/argus?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: argus123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ==================== Redis ====================
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 5000ms
+
+  # ==================== Spring AI（DeepSeek V4） ====================
+  ai:
+    openai:
+      base-url: https://api.deepseek.com
+      api-key: sk-33374fcc15e9426e9a92a107c4b9e7ee
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.1
+          max-tokens: 8192
+
+# ==================== MyBatis-Plus ====================
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.lnzz.argus.**.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ==================== Argus 配置 ====================
+argus:
+  # GitLab 配置
+  gitlab:
+    url: https://github.com/
+    token: ${GITLAB_TOKEN:glpat-placeholder}
+    webhook-secret: ${GITLAB_WEBHOOK_SECRET:argus-webhook-secret}
+    api-timeout: 10000
+    max-file-size: 1048576
+    retry:
+      max-attempts: 3
+      backoff-multiplier: 2
+
+  # 评审配置
+  review:
+    # 评分阈值，低于此分数阻止合并
+    block-threshold: 60
+    # 评审维度权重
+    dimensions:
+      compliance: 30
+      correctness: 25
+      data-integrity: 20
+      performance: 15
+      maintainability: 10
+    # 扣分规则
+    scoring:
+      critical-deduction: 15
+      major-deduction: 8
+      minor-deduction: 3
+
+  # dataway 日志监控
+  response-monitor:
+    dataway:
+      datasource-url: ${DATAWAY_DB_URL:jdbc:mysql://localhost:3306/dataway}
+      datasource-username: ${DATAWAY_DB_USER:root}
+      datasource-password: ${DATAWAY_DB_PASS:argus123}
+      table-name: gaea_api_history
+      poll-interval: 10000
+      batch-size: 200
+
+  # 企业微信通知
+  notification:
+    wechat:
+      webhooks:
+        default: ${WECHAT_WEBHOOK_DEFAULT:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=placeholder}
+        critical: ${WECHAT_WEBHOOK_CRITICAL:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=placeholder}
+      rate-limit:
+        same-type-interval: 60
+        max-per-hour: 30
+
+# ==================== 日志配置 ====================
+logging:
+  level:
+    com.lnzz.argus: debug
+    org.springframework.ai: info
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
