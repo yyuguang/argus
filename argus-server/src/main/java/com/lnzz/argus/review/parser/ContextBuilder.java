@@ -1,7 +1,9 @@
 package com.lnzz.argus.review.parser;
 
-import com.lnzz.argus.gitlab.client.GitLabApiClient;
-import com.lnzz.argus.gitlab.model.DiffFile;
+import com.lnzz.argus.review.entity.ReviewTask;
+import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.model.DiffFile;
+import com.lnzz.argus.scm.service.ScmPlatformService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -26,18 +28,23 @@ public class ContextBuilder {
     private static final int MAX_TOKENS_PER_FILE = 16000;
     private static final Pattern IMPORT_PATTERN = Pattern.compile("import\\s+(com\\.lnzz\\.[\\w.]+);");
 
-    private final GitLabApiClient gitLabApiClient;
     private final DiffParser diffParser;
 
     /**
      * M2-D01: 构建评审上下文列表
      *
-     * @param projectId  项目ID
+     * @param scmService SCM 服务
+     * @param config     SCM 配置
+     * @param task       评审任务
      * @param diffs      变更文件列表
      * @param ref        分支/commit
      * @return 评审上下文列表
      */
-    public List<ReviewContext> buildReviewContexts(Long projectId, List<DiffFile> diffs, String ref) {
+    public List<ReviewContext> buildReviewContexts(ScmPlatformService scmService,
+                                                   ScmConfig config,
+                                                   ReviewTask task,
+                                                   List<DiffFile> diffs,
+                                                   String ref) {
         List<ReviewContext> contexts = new ArrayList<>();
 
         for (DiffFile diff : diffs) {
@@ -45,7 +52,7 @@ public class ContextBuilder {
             diffParser.parseDiff(diff);
 
             // 获取完整文件内容
-            String fullContent = gitLabApiClient.getFileContent(projectId, diff.getNewPath(), ref);
+            String fullContent = scmService.getFileContent(config, task, diff.getNewPath(), ref);
 
             // 提取新增行号
             List<Integer> addedLineNumbers = diff.getAddedLines() != null
@@ -58,7 +65,7 @@ public class ContextBuilder {
                 List<String> internalImports = extractInternalImports(fullContent);
                 for (String importClass : internalImports) {
                     String importPath = classNameToPath(importClass);
-                    String importContent = gitLabApiClient.getFileContent(projectId, importPath, ref);
+                    String importContent = scmService.getFileContent(config, task, importPath, ref);
                     if (importContent != null) {
                         // 只取类签名和方法签名，不取完整实现
                         relatedClasses.put(importClass, extractClassSummary(importContent));

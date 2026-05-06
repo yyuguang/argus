@@ -22,8 +22,8 @@ public enum ResultCode {
     /** 资源不存在 */
     NOT_FOUND(10002, "资源不存在"),
 
-    /** GitLab API 调用失败 */
-    GITLAB_ERROR(20001, "GitLab API 调用失败"),
+    /** SCM API 调用失败 */
+    SCM_ERROR(20001, "SCM API 调用失败"),
 
     /** AI 模型调用失败 */
     AI_MODEL_ERROR(20002, "AI 模型调用失败"),

@@ -24,7 +24,7 @@ spring:
   ai:
     openai:
       base-url: https://api.deepseek.com
-      api-key: sk-33374fcc15e9426e9a92a107c4b9e7ee
+      api-key: ${DEEPSEEK_API_KEY:}
       chat:
         options:
           model: deepseek-chat
@@ -47,16 +47,35 @@ mybatis-plus:
 
 # ==================== Argus 配置 ====================
 argus:
-  # GitLab 配置
-  gitlab:
-    url: https://github.com/
-    token: ${GITLAB_TOKEN:glpat-placeholder}
-    webhook-secret: ${GITLAB_WEBHOOK_SECRET:argus-webhook-secret}
-    api-timeout: 10000
-    max-file-size: 1048576
-    retry:
-      max-attempts: 3
-      backoff-multiplier: 2
+  # SCM 平台配置
+  scm:
+    gitlab:
+      enabled: true
+      api-base-url: ${GITLAB_API_BASE_URL:https://gitlab.com/api/v4}
+      web-base-url: ${GITLAB_WEB_BASE_URL:https://gitlab.com}
+      api-timeout: 10000
+      max-file-size: 1048576
+      retry:
+        max-attempts: 3
+        backoff-multiplier: 2
+    github:
+      enabled: true
+      api-base-url: ${GITHUB_API_BASE_URL:https://api.github.com}
+      web-base-url: ${GITHUB_WEB_BASE_URL:https://github.com}
+      api-timeout: 10000
+      max-file-size: 1048576
+      retry:
+        max-attempts: 3
+        backoff-multiplier: 2
+    gitee:
+      enabled: true
+      api-base-url: ${GITEE_API_BASE_URL:https://gitee.com/api/v5}
+      web-base-url: ${GITEE_WEB_BASE_URL:https://gitee.com}
+      api-timeout: 10000
+      max-file-size: 1048576
+      retry:
+        max-attempts: 3
+        backoff-multiplier: 2
 
   # 评审配置
   review:

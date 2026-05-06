@@ -1,9 +1,10 @@
 package com.lnzz.argus.review.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.lnzz.argus.gitlab.model.MergeRequestEvent;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.review.mapper.ReviewTaskMapper;
+import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.model.PullRequestEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,10 +31,11 @@ public class ReviewService {
      * @param event MR 事件
      * @return 任务ID
      */
-    public Long triggerReview(MergeRequestEvent event) {
+    public Long triggerReview(PullRequestEvent event, ScmConfig config) {
         // M1-04: 幂等校验（同一个 MR + commit 只评审一次）
         ReviewTask existing = reviewTaskMapper.selectOne(
                 new LambdaQueryWrapper<ReviewTask>()
+                        .eq(ReviewTask::getScmProvider, event.getScmProvider())
                         .eq(ReviewTask::getProjectId, event.getProjectId())
                         .eq(ReviewTask::getMrIid, event.getMrIid())
                         .eq(ReviewTask::getLastCommitSha, event.getLastCommitSha())
@@ -51,7 +53,7 @@ public class ReviewService {
                 existing.setErrorMessage(null);
                 existing.setDuration(null);
                 existing.setSummary(null);
-                existing.setGitlabCommentId(null);
+                existing.setScmCommentId(null);
                 existing.setNotified(false);
                 reviewTaskMapper.updateById(existing);
 
@@ -63,8 +65,12 @@ public class ReviewService {
 
         // 创建评审任务
         ReviewTask task = new ReviewTask();
+        task.setScmProvider(event.getScmProvider());
+        task.setScmConfigId(config.getId());
         task.setProjectId(event.getProjectId());
         task.setProjectName(event.getProjectName());
+        task.setRepoOwner(event.getRepoOwner());
+        task.setRepoName(event.getRepoName());
         task.setMrIid(event.getMrIid());
         task.setMrTitle(event.getMrTitle());
         task.setMrUrl(event.getMrUrl());
