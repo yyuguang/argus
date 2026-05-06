@@ -1,7 +1,5 @@
 package com.lnzz.argus.review.service;
 
-import com.lnzz.argus.gitlab.client.GitLabApiClient;
-import com.lnzz.argus.gitlab.model.DiffFile;
 import com.lnzz.argus.notification.service.NotificationService;
 import com.lnzz.argus.review.ai.AiReviewEngine;
 import com.lnzz.argus.review.ai.CodingStandardsLoader;
@@ -14,6 +12,11 @@ import com.lnzz.argus.review.mapper.ReviewTaskMapper;
 import com.lnzz.argus.review.parser.ContextBuilder;
 import com.lnzz.argus.review.parser.DiffParser;
 import com.lnzz.argus.review.parser.ReviewContext;
+import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.model.DiffFile;
+import com.lnzz.argus.scm.service.ScmConfigService;
+import com.lnzz.argus.scm.service.ScmPlatformService;
+import com.lnzz.argus.scm.service.ScmPlatformServiceFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -25,7 +28,7 @@ import java.util.List;
 /**
  * 评审执行器
  * <p>M3-A02: 异步执行完整评审流程</p>
- * <p>流程: 获取Diff → 解析代码 → 构建上下文 → AI评审 → 评分 → 回写GitLab → 通知</p>
+ * <p>流程: 获取Diff → 解析代码 → 构建上下文 → AI评审 → 评分 → 回写SCM → 通知</p>
  *
  * @author lnzz
  * @since 1.0.0
@@ -37,7 +40,8 @@ public class ReviewExecutor {
 
     private final ReviewTaskMapper reviewTaskMapper;
     private final ReviewIssueMapper reviewIssueMapper;
-    private final GitLabApiClient gitLabApiClient;
+    private final ScmConfigService scmConfigService;
+    private final ScmPlatformServiceFactory scmPlatformServiceFactory;
     private final ContextBuilder contextBuilder;
     private final DiffParser diffParser;
     private final PromptBuilder promptBuilder;
@@ -64,13 +68,16 @@ public class ReviewExecutor {
         log.info("开始执行评审: taskId={}, project={}, mrIid={}", taskId, task.getProjectName(), task.getMrIid());
 
         try {
+            ScmConfig scmConfig = scmConfigService.requireById(task.getScmConfigId());
+            ScmPlatformService scmService = scmPlatformServiceFactory.getRequired(task.getScmProvider());
+
             // Step 0: 更新状态为 RUNNING
             task.setStatus("RUNNING");
             task.setErrorMessage(null);
             reviewTaskMapper.updateById(task);
 
-            // Step 1: 获取 MR Diff
-            List<DiffFile> diffs = gitLabApiClient.getMergeRequestDiffs(task.getProjectId(), task.getMrIid());
+            // Step 1: 获取 PR/MR Diff
+            List<DiffFile> diffs = scmService.getPullRequestDiffs(scmConfig, task);
 
             // Step 2: 过滤 Java 文件
             List<DiffFile> javaDiffs = diffs.stream()
@@ -88,7 +95,7 @@ public class ReviewExecutor {
                     ? task.getLastCommitSha()
                     : task.getSourceBranch();
             List<ReviewContext> contexts = contextBuilder.buildReviewContexts(
-                    task.getProjectId(), javaDiffs, reviewRef);
+                    scmService, scmConfig, task, javaDiffs, reviewRef);
 
             // 计算变更统计
             DiffParser.DiffStats stats = diffParser.calculateStats(javaDiffs);
@@ -139,14 +146,13 @@ public class ReviewExecutor {
             String report = reportFormatter.formatReport(task, finalScore, allIssues);
             task.setSummary(report);
 
-            // Step 8: 回写 GitLab
-            Long commentId = gitLabApiClient.addMergeRequestComment(
-                    task.getProjectId(), task.getMrIid(), report);
-            task.setGitlabCommentId(commentId);
+            // Step 8: 回写 SCM
+            Long commentId = scmService.addPullRequestComment(scmConfig, task, report);
+            task.setScmCommentId(commentId);
 
-            // 设置 MR 标签
+            // 设置 PR/MR 标签
             String label = finalScore.isPassed() ? "AI-Review:PASSED" : "AI-Review:BLOCKED";
-            gitLabApiClient.setMergeRequestLabels(task.getProjectId(), task.getMrIid(), List.of(label));
+            scmService.setPullRequestLabels(scmConfig, task, List.of(label));
 
             // Step 9: 保存问题到数据库
             for (AiReviewEngine.ReviewResult.Issue issue : allIssues) {

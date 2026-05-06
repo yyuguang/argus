@@ -6,11 +6,15 @@
 -- 评审任务表
 CREATE TABLE IF NOT EXISTS argus_review_task (
     id              BIGINT          PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-    project_id      BIGINT          NOT NULL COMMENT 'GitLab项目ID',
-    project_name    VARCHAR(100)    NOT NULL COMMENT '项目名称',
-    mr_iid          BIGINT          NOT NULL COMMENT 'MR编号',
-    mr_title        VARCHAR(500)    NOT NULL COMMENT 'MR标题',
-    mr_url          VARCHAR(500)    NOT NULL COMMENT 'MR链接',
+    scm_provider    VARCHAR(20)     NOT NULL COMMENT 'SCM平台: gitlab/github/gitee',
+    scm_config_id   BIGINT          DEFAULT NULL COMMENT 'SCM配置ID',
+    project_id      BIGINT          NOT NULL COMMENT '仓库/项目ID',
+    project_name    VARCHAR(100)    NOT NULL COMMENT '仓库/项目名称',
+    repo_owner      VARCHAR(100)    DEFAULT NULL COMMENT '仓库归属 owner/group',
+    repo_name       VARCHAR(100)    DEFAULT NULL COMMENT '仓库名称',
+    mr_iid          BIGINT          NOT NULL COMMENT 'PR/MR编号',
+    mr_title        VARCHAR(500)    NOT NULL COMMENT 'PR/MR标题',
+    mr_url          VARCHAR(500)    NOT NULL COMMENT 'PR/MR链接',
     author_name     VARCHAR(100)    NOT NULL COMMENT '提交者',
     source_branch   VARCHAR(200)    NOT NULL COMMENT '源分支',
     target_branch   VARCHAR(200)    NOT NULL COMMENT '目标分支',
@@ -28,20 +32,46 @@ CREATE TABLE IF NOT EXISTS argus_review_task (
     duration        BIGINT          DEFAULT NULL COMMENT '评审耗时(ms)',
     error_message   TEXT            DEFAULT NULL COMMENT '失败原因',
     summary         TEXT            DEFAULT NULL COMMENT '评审总结',
-    gitlab_comment_id BIGINT        DEFAULT NULL COMMENT 'GitLab评论ID',
+    scm_comment_id  BIGINT          DEFAULT NULL COMMENT 'SCM评论ID',
     notified        TINYINT(1)      DEFAULT 0 COMMENT '是否已通知: 0-否 1-是',
     create_by       VARCHAR(64)     DEFAULT NULL COMMENT '创建人',
     create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_by       VARCHAR(64)     DEFAULT NULL COMMENT '修改人',
     update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',
 
-    UNIQUE KEY uk_project_mr_commit (project_id, mr_iid, last_commit_sha),
+    UNIQUE KEY uk_scm_project_mr_commit (scm_provider, project_id, mr_iid, last_commit_sha),
+    INDEX idx_scm_provider (scm_provider),
+    INDEX idx_scm_config_id (scm_config_id),
     INDEX idx_status (status),
     INDEX idx_project (project_name),
     INDEX idx_author (author_name),
     INDEX idx_created (create_time),
     INDEX idx_score (total_score)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='评审任务表';
+
+-- SCM 仓库配置表
+CREATE TABLE IF NOT EXISTS argus_scm_config (
+    id              BIGINT          PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    scm_provider    VARCHAR(20)     NOT NULL COMMENT 'SCM平台: gitlab/github/gitee',
+    project_id      BIGINT          DEFAULT NULL COMMENT '仓库/项目ID',
+    project_name    VARCHAR(100)    DEFAULT NULL COMMENT '仓库/项目名称',
+    repo_owner      VARCHAR(100)    DEFAULT NULL COMMENT '仓库归属 owner/group',
+    repo_name       VARCHAR(100)    DEFAULT NULL COMMENT '仓库名称',
+    api_base_url    VARCHAR(255)    DEFAULT NULL COMMENT 'API基础地址',
+    web_base_url    VARCHAR(255)    DEFAULT NULL COMMENT 'Web基础地址',
+    access_token    VARCHAR(500)    DEFAULT NULL COMMENT '访问令牌',
+    webhook_secret  VARCHAR(500)    DEFAULT NULL COMMENT 'Webhook密钥',
+    enabled         TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '是否启用: 0-否 1-是',
+    description     VARCHAR(500)    DEFAULT NULL COMMENT '配置说明',
+    create_by       VARCHAR(64)     DEFAULT NULL COMMENT '创建人',
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_by       VARCHAR(64)     DEFAULT NULL COMMENT '修改人',
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',
+
+    UNIQUE KEY uk_provider_project (scm_provider, project_id),
+    UNIQUE KEY uk_provider_repo (scm_provider, repo_owner, repo_name),
+    INDEX idx_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='SCM仓库配置表';
 
 -- 评审评分详情表
 CREATE TABLE IF NOT EXISTS argus_review_score (
@@ -156,7 +186,8 @@ CREATE TABLE IF NOT EXISTS argus_error_analysis (
 CREATE TABLE IF NOT EXISTS argus_project_mapping (
     id                BIGINT          PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
     app_name          VARCHAR(100)    NOT NULL COMMENT '应用名称',
-    gitlab_project_id BIGINT          NOT NULL COMMENT 'GitLab项目ID',
+    scm_provider      VARCHAR(20)     NOT NULL DEFAULT 'gitlab' COMMENT 'SCM平台: gitlab/github/gitee',
+    scm_project_id    BIGINT          NOT NULL COMMENT '仓库/项目ID',
     source_root       VARCHAR(200)    DEFAULT 'src/main/java' COMMENT '源码根目录',
     base_package      VARCHAR(200)    NOT NULL COMMENT '基础包名',
     default_branch    VARCHAR(100)    DEFAULT 'master' COMMENT '默认分支',
@@ -166,8 +197,8 @@ CREATE TABLE IF NOT EXISTS argus_project_mapping (
     update_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',
 
     UNIQUE KEY uk_app (app_name),
-    UNIQUE KEY uk_gitlab (gitlab_project_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='应用-GitLab项目映射表';
+    UNIQUE KEY uk_scm_project (scm_provider, scm_project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='应用-SCM项目映射表';
 
 -- 通知记录表
 CREATE TABLE IF NOT EXISTS argus_notification_record (
