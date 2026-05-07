@@ -90,6 +90,15 @@ public class ScmConfigService {
         if (config.getRepoName() != null) {
             config.setRepoName(config.getRepoName().trim());
         }
+        if (config.getMaxRelatedClasses() == null || config.getMaxRelatedClasses() <= 0) {
+            config.setMaxRelatedClasses(5);
+        }
+        if (config.getMaxContextTokens() == null || config.getMaxContextTokens() <= 0) {
+            config.setMaxContextTokens(16000);
+        }
+        if (config.getReviewParallelism() == null || config.getReviewParallelism() <= 0) {
+            config.setReviewParallelism(3);
+        }
     }
 
     public String maskSecret(String secret) {

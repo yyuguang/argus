@@ -20,6 +20,9 @@ public class ReviewContext {
     /** 文件路径 */
     private String filePath;
 
+    /** 文件语言标签 */
+    private String languageTag;
+
     /** 文件完整内容 */
     private String fullContent;
 

@@ -18,7 +18,7 @@
   --radius-xl: 24px;
   --radius-lg: 18px;
   --radius-md: 12px;
-  --sidebar-width: 300px;
+  --sidebar-width: clamp(240px, 18vw, 300px);
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
 }
 
@@ -54,14 +54,17 @@ a {
 
 .admin-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: minmax(240px, var(--sidebar-width)) minmax(0, 1fr);
   min-height: 100vh;
+  width: 100%;
+  overflow-x: clip;
 }
 
 .admin-sidebar {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
   padding: 24px 20px;
   color: rgba(255, 255, 255, 0.92);
   background:
@@ -203,6 +206,7 @@ a {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  width: 100%;
 }
 
 .admin-header {
@@ -288,12 +292,14 @@ a {
 
 .admin-content {
   padding: 0 28px 28px;
+  min-width: 0;
 }
 
 .page {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-width: 0;
 }
 
 .page-banner,
@@ -308,8 +314,9 @@ a {
 
 .page-banner {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
   gap: 24px;
+  min-width: 0;
   padding: 28px;
   background:
     linear-gradient(135deg, rgba(37, 99, 235, 0.06), rgba(248, 250, 252, 0.92)),
@@ -346,6 +353,7 @@ a {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  min-width: 0;
   padding: 20px;
   border-radius: 20px;
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.08), rgba(37, 99, 235, 0.03));
@@ -409,12 +417,14 @@ a {
 
 .workspace {
   display: grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
   gap: 18px;
+  min-width: 0;
 }
 
 .panel-card {
   padding: 22px;
+  min-width: 0;
 }
 
 .section-heading,
@@ -470,6 +480,7 @@ a {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  min-width: 0;
 }
 
 .field {
@@ -576,13 +587,16 @@ a {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow: auto;
 }
 
 .config-table {
   width: 100%;
-  min-width: 920px;
+  min-width: 760px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .config-table th,
@@ -608,6 +622,10 @@ a {
   color: var(--muted);
   font-size: 13px;
   word-break: break-all;
+}
+
+.config-table td {
+  word-break: break-word;
 }
 
 .provider-badge,
@@ -843,6 +861,32 @@ a {
   .stats-grid {
     grid-template-columns: 1fr;
   }
+
+  .page-banner {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1200px) {
+  .admin-shell {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+
+  .admin-sidebar {
+    padding: 20px 16px;
+  }
+
+  .admin-header {
+    padding: 18px 20px 14px;
+  }
+
+  .admin-content {
+    padding: 0 20px 20px;
+  }
+
+  .header-search input {
+    width: 160px;
+  }
 }
 
 @media (max-width: 1024px) {
@@ -875,6 +919,12 @@ a {
 }
 
 @media (max-width: 720px) {
+  .page-banner,
+  .panel-card {
+    padding: 18px;
+    border-radius: 18px;
+  }
+
   .field-grid {
     grid-template-columns: 1fr;
   }

@@ -48,6 +48,24 @@ public class ScmConfig extends BaseEntity {
     /** Webhook 密钥 */
     private String webhookSecret;
 
+    /** 基础包前缀列表(JSON数组) */
+    private String basePackages;
+
+    /** 模块源码根列表(JSON数组) */
+    private String moduleSourceRoots;
+
+    /** 包前缀到源码根映射(JSON数组) */
+    private String packageModuleMappings;
+
+    /** 单文件最大关联类数 */
+    private Integer maxRelatedClasses;
+
+    /** 单文件最大上下文Token */
+    private Integer maxContextTokens;
+
+    /** 评审并发度 */
+    private Integer reviewParallelism;
+
     /** 是否启用 */
     private Boolean enabled;
 
