@@ -67,7 +67,7 @@ public class AiReviewEngine {
     private ReviewResult parseResponse(String response) {
         try {
             // 提取 JSON 块
-            String json = extractJson(response);
+            String json = extractJson(sanitizeResponse(response));
             JSONObject obj = JSON.parseObject(json);
 
             ReviewResult result = new ReviewResult();
@@ -135,14 +135,60 @@ public class AiReviewEngine {
             }
         }
 
-        // 尝试提取 { ... } 中的内容
-        int braceStart = response.indexOf('{');
-        int braceEnd = response.lastIndexOf('}');
-        if (braceStart >= 0 && braceEnd > braceStart) {
-            return response.substring(braceStart, braceEnd + 1);
+        String firstBalancedObject = extractFirstBalancedJsonObject(response);
+        if (firstBalancedObject != null) {
+            return firstBalancedObject;
         }
 
         return response.trim();
+    }
+
+    private String sanitizeResponse(String response) {
+        if (response == null) {
+            return null;
+        }
+        return response
+                .replace("\uFEFF", "")
+                .replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", "")
+                .trim();
+    }
+
+    private String extractFirstBalancedJsonObject(String response) {
+        int start = response.indexOf('{');
+        if (start < 0) {
+            return null;
+        }
+
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < response.length(); i++) {
+            char c = response.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return response.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
     }
 
     /**

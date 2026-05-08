@@ -11,6 +11,7 @@ import com.lnzz.argus.scm.model.PullRequestEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -98,8 +99,12 @@ public class GiteeScmService extends AbstractScmPlatformService {
     @Override
     public String getFileContent(ScmConfig config, ReviewTask task, String filePath, String ref) {
         String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/contents/" + normalizeContentPath(filePath) + "?ref={ref}&access_token={token}";
-        return doGet(url, buildHeaders(config),
-                task.getRepoOwner(), task.getRepoName(), ref, config.getAccessToken()).getBody();
+        try {
+            return doGet(url, buildHeaders(config),
+                    task.getRepoOwner(), task.getRepoName(), ref, config.getAccessToken()).getBody();
+        } catch (RestClientException | com.lnzz.argus.common.exception.BizException e) {
+            return null;
+        }
     }
 
     @Override

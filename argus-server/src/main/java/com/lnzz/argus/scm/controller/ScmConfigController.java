@@ -60,6 +60,12 @@ public class ScmConfigController {
         config.setWebBaseUrl(request.getWebBaseUrl());
         config.setAccessToken(request.getAccessToken());
         config.setWebhookSecret(request.getWebhookSecret());
+        config.setBasePackages(request.getBasePackages());
+        config.setModuleSourceRoots(request.getModuleSourceRoots());
+        config.setPackageModuleMappings(request.getPackageModuleMappings());
+        config.setMaxRelatedClasses(request.getMaxRelatedClasses());
+        config.setMaxContextTokens(request.getMaxContextTokens());
+        config.setReviewParallelism(request.getReviewParallelism());
         config.setEnabled(request.getEnabled());
         config.setDescription(request.getDescription());
         return config;
@@ -77,6 +83,12 @@ public class ScmConfigController {
                 config.getWebBaseUrl(),
                 scmConfigService.maskSecret(config.getAccessToken()),
                 scmConfigService.maskSecret(config.getWebhookSecret()),
+                config.getBasePackages(),
+                config.getModuleSourceRoots(),
+                config.getPackageModuleMappings(),
+                config.getMaxRelatedClasses(),
+                config.getMaxContextTokens(),
+                config.getReviewParallelism(),
                 config.getEnabled(),
                 config.getDescription()
         );
@@ -94,6 +106,12 @@ public class ScmConfigController {
         private String webBaseUrl;
         private String accessToken;
         private String webhookSecret;
+        private String basePackages;
+        private String moduleSourceRoots;
+        private String packageModuleMappings;
+        private Integer maxRelatedClasses;
+        private Integer maxContextTokens;
+        private Integer reviewParallelism;
         private Boolean enabled;
         private String description;
     }
@@ -109,6 +127,12 @@ public class ScmConfigController {
             String webBaseUrl,
             String accessToken,
             String webhookSecret,
+            String basePackages,
+            String moduleSourceRoots,
+            String packageModuleMappings,
+            Integer maxRelatedClasses,
+            Integer maxContextTokens,
+            Integer reviewParallelism,
             Boolean enabled,
             String description
     ) {

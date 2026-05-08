@@ -9,6 +9,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
+
 /**
  * 评审服务
  * <p>M3-A: 评审编排器，负责创建任务、调度评审、聚合结果</p>
@@ -20,6 +23,8 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class ReviewService {
+
+    private static final long STALE_TASK_SECONDS = 60;
 
     private final ReviewTaskMapper reviewTaskMapper;
     private final ReviewExecutor reviewExecutor;
@@ -42,9 +47,29 @@ public class ReviewService {
         );
         if (existing != null) {
             String status = existing.getStatus();
-            // 已成功或正在处理中的任务直接复用；失败/超时任务允许重试同一 commit。
-            if ("DONE".equals(status) || "RUNNING".equals(status) || "PENDING".equals(status)) {
+            // 已成功任务直接复用。
+            if ("DONE".equals(status)) {
                 log.info("评审任务已存在, taskId={}, status={}", existing.getId(), status);
+                return existing.getId();
+            }
+
+            // RUNNING / PENDING 任务如果长时间未推进，则自动重新派发，避免任务卡死后无法恢复。
+            if ("RUNNING".equals(status) || "PENDING".equals(status)) {
+                if (isTaskStale(existing)) {
+                    existing.setStatus("PENDING");
+                    existing.setErrorMessage("检测到任务长时间未推进，系统已自动重新派发");
+                    existing.setDuration(null);
+                    existing.setSummary(null);
+                    existing.setScmCommentId(null);
+                    existing.setNotified(false);
+                    reviewTaskMapper.updateById(existing);
+
+                    log.warn("检测到卡住任务，重新派发: taskId={}, previousStatus={}, updateTime={}",
+                            existing.getId(), status, existing.getUpdateTime());
+                    dispatchReview(existing.getId());
+                } else {
+                    log.info("评审任务已存在且仍在处理中, taskId={}, status={}", existing.getId(), status);
+                }
                 return existing.getId();
             }
 
@@ -58,7 +83,7 @@ public class ReviewService {
                 reviewTaskMapper.updateById(existing);
 
                 log.info("重试已有评审任务, taskId={}, previousStatus={}", existing.getId(), status);
-                reviewExecutor.executeReview(existing.getId());
+                dispatchReview(existing.getId());
                 return existing.getId();
             }
         }
@@ -85,8 +110,21 @@ public class ReviewService {
         log.info("创建评审任务, taskId={}, project={}, mrIid={}", task.getId(), event.getProjectName(), event.getMrIid());
 
         // 异步执行评审
-        reviewExecutor.executeReview(task.getId());
+        dispatchReview(task.getId());
 
         return task.getId();
+    }
+
+    private void dispatchReview(Long taskId) {
+        log.info("派发评审执行, taskId={}", taskId);
+        reviewExecutor.executeReview(taskId);
+    }
+
+    private boolean isTaskStale(ReviewTask task) {
+        LocalDateTime baseTime = task.getUpdateTime() != null ? task.getUpdateTime() : task.getCreateTime();
+        if (baseTime == null) {
+            return true;
+        }
+        return Duration.between(baseTime, LocalDateTime.now()).getSeconds() >= STALE_TASK_SECONDS;
     }
 }

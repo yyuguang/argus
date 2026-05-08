@@ -85,6 +85,8 @@ public class PromptBuilder {
      */
     public String buildReviewPrompt(ReviewContext context, String codingStandards) {
         StringBuilder prompt = new StringBuilder();
+        String languageTag = resolveLanguageTag(context);
+        String reviewFocus = resolveReviewFocus(context);
 
         prompt.append(SYSTEM_INSTRUCTION);
         prompt.append("\n\n");
@@ -100,8 +102,10 @@ public class PromptBuilder {
         // 注入代码文件
         prompt.append("## 待评审文件\n\n");
         prompt.append("文件路径: `").append(context.getFilePath()).append("`\n\n");
+        prompt.append("文件类型: `").append(languageTag).append("`\n\n");
+        prompt.append("建议重点关注: ").append(reviewFocus).append("\n\n");
 
-        prompt.append("### 完整文件内容\n```java\n");
+        prompt.append("### 完整文件内容\n```").append(languageTag).append("\n");
         prompt.append(context.getFullContent() != null ? context.getFullContent() : "// 无法获取文件内容");
         prompt.append("\n```\n\n");
 
@@ -156,18 +160,37 @@ public class PromptBuilder {
         return content.substring(0, maxChars) + "\n// ... 关联类摘要已截断 ...";
     }
 
+    private String resolveLanguageTag(ReviewContext context) {
+        if (context.getLanguageTag() == null || context.getLanguageTag().isBlank()) {
+            return "text";
+        }
+        return context.getLanguageTag();
+    }
+
+    private String resolveReviewFocus(ReviewContext context) {
+        String languageTag = resolveLanguageTag(context);
+        return switch (languageTag) {
+            case "java" -> "判空链路、异常处理、外部接口调用、关键字段传递、日志和可维护性";
+            case "sql" -> "DDL/DML 风险、全表更新删除、索引影响、兼容性、事务与回滚方案";
+            case "yaml", "properties", "xml", "json" ->
+                    "环境配置误改、开关项风险、连接池/线程池/超时参数、权限和路由配置";
+            case "bash", "dockerfile" -> "执行安全、环境依赖、路径/权限、可移植性、失败回滚";
+            default -> "变更是否引入逻辑风险、配置风险、可维护性问题或发布风险";
+        };
+    }
+
     /** 系统指令 */
     private static final String SYSTEM_INSTRUCTION = """
-            你是 Argus 代码评审 AI，一位严格、克制、证据导向的高级 Java 代码审查员。
-            你的职责是对代码变更执行“可阻止合并”的工程评审，并输出稳定、结构化、可落地的结果。
+            你是 Argus 代码评审 AI，一位严格、克制、证据导向的高级工程变更审查员。
+            你的职责是对代码、SQL、配置文件等变更执行“可阻止合并”的工程评审，并输出稳定、结构化、可落地的结果。
             
             ## 评审维度与权重
             
             1. **规范合规（30%）**：检查命名规范、注释、日志、代码风格是否符合团队编码规范
-            2. **逻辑正确（25%）**：检查空指针风险、边界条件、异常处理、逻辑漏洞
-            3. **数据完整（20%）**：检查接口调用返回值是否正确判空和解析、参数传递是否完整
-            4. **性能风险（15%）**：检查 N+1 查询、大对象拷贝、循环远程调用、资源泄露
-            5. **可维护性（10%）**：检查方法长度、嵌套深度、圈复杂度、重复代码
+            2. **逻辑正确（25%）**：检查空指针风险、边界条件、异常处理、逻辑漏洞、脚本执行顺序问题
+            3. **数据完整（20%）**：检查接口返回值解析、SQL 数据修复风险、配置项是否会破坏数据链路
+            4. **性能风险（15%）**：检查 N+1 查询、大对象拷贝、慢 SQL、循环远程调用、资源泄露
+            5. **可维护性（10%）**：检查方法长度、嵌套深度、圈复杂度、重复代码、配置可读性与可回滚性
             
             ## 问题严重度定义
             
@@ -180,10 +203,12 @@ public class PromptBuilder {
             
             1. 结论必须基于输入代码和上下文中的直接证据，禁止脑补未提供的事实。
             2. 只评审本次 Diff 变更，但要结合完整文件上下文分析变更影响。
-            3. 优先审查：外部接口调用、异常处理、判空链路、日志、关键字段传递。
+            3. 优先审查：外部接口调用、异常处理、判空链路、日志、关键字段传递、SQL 变更风险、配置变更风险。
             4. 每个问题必须指出具体文件路径和尽量准确的行号。
             5. 每个问题必须给出修复建议；CRITICAL/MAJOR 必须给出简短修复方向。
             6. 如果没有发现问题，也要给出亮点和简明总结。
+            7. 如果是 SQL 文件，重点检查：DDL/DML 风险、where 条件缺失、索引影响、兼容性、事务与回滚风险。
+            8. 如果是 YAML/XML/Properties/JSON 等配置文件，重点检查：环境配置误改、超时/线程池/连接池参数异常、开关项风险、日志级别、路由或权限配置错误。
             """;
 
     /** 输出格式要求 */

@@ -11,6 +11,7 @@ import com.lnzz.argus.scm.model.PullRequestEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -119,7 +120,11 @@ public class GitHubScmService extends AbstractScmPlatformService {
         String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/contents/" + normalizeContentPath(filePath) + "?ref={ref}";
         HttpHeaders headers = buildHeaders(config);
         headers.setAccept(List.of(org.springframework.http.MediaType.valueOf("application/vnd.github.raw+json")));
-        return doGet(url, headers, task.getRepoOwner(), task.getRepoName(), ref).getBody();
+        try {
+            return doGet(url, headers, task.getRepoOwner(), task.getRepoName(), ref).getBody();
+        } catch (RestClientException | com.lnzz.argus.common.exception.BizException e) {
+            return null;
+        }
     }
 
     @Override

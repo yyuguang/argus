@@ -19,11 +19,14 @@ import com.lnzz.argus.scm.service.ScmPlatformService;
 import com.lnzz.argus.scm.service.ScmPlatformServiceFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * 评审执行器
@@ -50,6 +53,8 @@ public class ReviewExecutor {
     private final CodingStandardsLoader codingStandardsLoader;
     private final ReviewReportFormatter reportFormatter;
     private final NotificationService notificationService;
+    @Qualifier("reviewFileExecutor")
+    private final Executor reviewFileExecutor;
 
     /**
      * 异步执行评审
@@ -79,14 +84,14 @@ public class ReviewExecutor {
             // Step 1: 获取 PR/MR Diff
             List<DiffFile> diffs = scmService.getPullRequestDiffs(scmConfig, task);
 
-            // Step 2: 过滤 Java 文件
-            List<DiffFile> javaDiffs = diffs.stream()
-                    .filter(DiffFile::isJavaFile)
+            // Step 2: 过滤可评审文件（Java / SQL / 配置文件等）
+            List<DiffFile> reviewableDiffs = diffs.stream()
+                    .filter(DiffFile::isReviewableFile)
                     .filter(d -> !d.isDeletedFile())
                     .toList();
 
-            if (javaDiffs.isEmpty()) {
-                completeWithNoJavaFiles(task, startTime);
+            if (reviewableDiffs.isEmpty()) {
+                completeWithNoReviewableFiles(task, startTime);
                 return;
             }
 
@@ -95,10 +100,10 @@ public class ReviewExecutor {
                     ? task.getLastCommitSha()
                     : task.getSourceBranch();
             List<ReviewContext> contexts = contextBuilder.buildReviewContexts(
-                    scmService, scmConfig, task, javaDiffs, reviewRef);
+                    scmService, scmConfig, task, reviewableDiffs, reviewRef);
 
             // 计算变更统计
-            DiffParser.DiffStats stats = diffParser.calculateStats(javaDiffs);
+            DiffParser.DiffStats stats = diffParser.calculateStats(reviewableDiffs);
             task.setFileCount(stats.fileCount());
             task.setAddedLines(stats.addedLines());
             task.setRemovedLines(stats.removedLines());
@@ -107,30 +112,17 @@ public class ReviewExecutor {
             String codingStandards = codingStandardsLoader.loadCodingStandards();
 
             // Step 5: 对每个文件执行 AI 评审
+            List<FileReviewResult> fileResults = executeFileReviews(contexts, codingStandards, scmConfig);
             List<ScoreCalculator.ScoreResult> allScores = new ArrayList<>();
             List<AiReviewEngine.ReviewResult.Issue> allIssues = new ArrayList<>();
             int totalTokens = 0;
 
-            for (ReviewContext context : contexts) {
-                // 构建 Prompt
-                String prompt = promptBuilder.buildReviewPrompt(context, codingStandards);
-
-                // 调用 AI
-                AiReviewEngine.ReviewResult reviewResult = aiReviewEngine.executeReview(prompt);
-                totalTokens += reviewResult.getTokensUsed();
-
-                // 计算评分
-                ScoreCalculator.ScoreResult scoreResult = scoreCalculator.calculateScore(reviewResult);
-                allScores.add(scoreResult);
-
-                // 收集问题
-                if (reviewResult.getIssues() != null) {
-                    allIssues.addAll(reviewResult.getIssues());
+            for (FileReviewResult fileResult : fileResults) {
+                totalTokens += fileResult.reviewResult().getTokensUsed();
+                allScores.add(fileResult.scoreResult());
+                if (fileResult.reviewResult().getIssues() != null) {
+                    allIssues.addAll(fileResult.reviewResult().getIssues());
                 }
-
-                log.info("文件评审完成: file={}, score={}, issues={}",
-                        context.getFilePath(), scoreResult.getTotalScore(),
-                        reviewResult.getIssues() != null ? reviewResult.getIssues().size() : 0);
             }
 
             // Step 6: 合并评分
@@ -197,15 +189,49 @@ public class ReviewExecutor {
     /**
      * 无 Java 文件变更时的快速完成
      */
-    private void completeWithNoJavaFiles(ReviewTask task, long startTime) {
-        log.info("无Java文件变更, taskId={}", task.getId());
+    private void completeWithNoReviewableFiles(ReviewTask task, long startTime) {
+        log.info("无可评审文件变更, taskId={}", task.getId());
         task.setStatus("DONE");
         task.setTotalScore(100);
         task.setScoreLevel("A");
         task.setFileCount(0);
-        task.setSummary("本次提交无Java文件变更，自动通过");
+        task.setSummary("本次提交无可评审文件变更（如 Java、SQL、YAML、XML、Properties 等），自动通过");
         task.setDuration(System.currentTimeMillis() - startTime);
         task.setNotified(false);
         reviewTaskMapper.updateById(task);
+    }
+
+    private List<FileReviewResult> executeFileReviews(List<ReviewContext> contexts,
+                                                      String codingStandards,
+                                                      ScmConfig scmConfig) {
+        int parallelism = scmConfig.getReviewParallelism() != null ? scmConfig.getReviewParallelism() : 3;
+        parallelism = Math.max(1, Math.min(parallelism, contexts.size()));
+
+        List<FileReviewResult> results = new ArrayList<>();
+        for (int start = 0; start < contexts.size(); start += parallelism) {
+            int end = Math.min(start + parallelism, contexts.size());
+            List<CompletableFuture<FileReviewResult>> futures = contexts.subList(start, end).stream()
+                    .map(context -> CompletableFuture.supplyAsync(() -> reviewSingleFile(context, codingStandards), reviewFileExecutor))
+                    .toList();
+            for (CompletableFuture<FileReviewResult> future : futures) {
+                results.add(future.join());
+            }
+        }
+        return results;
+    }
+
+    private FileReviewResult reviewSingleFile(ReviewContext context, String codingStandards) {
+        String prompt = promptBuilder.buildReviewPrompt(context, codingStandards);
+        AiReviewEngine.ReviewResult reviewResult = aiReviewEngine.executeReview(prompt);
+        ScoreCalculator.ScoreResult scoreResult = scoreCalculator.calculateScore(reviewResult);
+        log.info("文件评审完成: file={}, score={}, issues={}",
+                context.getFilePath(), scoreResult.getTotalScore(),
+                reviewResult.getIssues() != null ? reviewResult.getIssues().size() : 0);
+        return new FileReviewResult(context.getFilePath(), reviewResult, scoreResult);
+    }
+
+    private record FileReviewResult(String filePath,
+                                    AiReviewEngine.ReviewResult reviewResult,
+                                    ScoreCalculator.ScoreResult scoreResult) {
     }
 }
