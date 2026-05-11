@@ -22,6 +22,9 @@ public enum ResultCode {
     /** 资源不存在 */
     NOT_FOUND(10002, "资源不存在"),
 
+    /** 认证/鉴权失败 */
+    UNAUTHORIZED(10003, "认证/鉴权失败"),
+
     /** SCM API 调用失败 */
     SCM_ERROR(20001, "SCM API 调用失败"),
 
