@@ -1,6 +1,7 @@
 package com.lnzz.argus.review.parser;
 
 import com.alibaba.fastjson2.JSON;
+import com.lnzz.argus.review.config.ReviewConfig;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.model.DiffFile;
@@ -108,6 +109,10 @@ public class ContextBuilder {
 
             ReviewContext context = ReviewContext.builder()
                     .filePath(diff.getNewPath())
+                    .projectName(task.getProjectName())
+                    .scmProvider(task.getScmProvider())
+                    .authorId(task.getAuthorId())
+                    .authorName(task.getAuthorName())
                     .languageTag(diff.getLanguageTag())
                     .fullContent(fullContent)
                     .diffContent(diff.getDiff())
@@ -329,5 +334,75 @@ public class ContextBuilder {
     }
 
     private record PackageModuleRule(String packagePrefix, String sourceRoot) {
+    }
+
+    // ======================== Token 预算分配 ========================
+
+    /**
+     * 按文件 diff 行数加权分配 Token 预算。
+     * <p>总预算 = maxContextTokens - templateReserveTokens - relatedClassTokens</p>
+     * <p>新增文件 × newFilePenalty，核心模块 × coreModuleBonus，每文件保底 minTokenPerFile</p>
+     */
+    public void trimToBudget(List<ReviewContext> contexts, ReviewConfig.TokenConfig tokenConfig) {
+        if (contexts == null || contexts.isEmpty()) return;
+
+        int availableBudget = tokenConfig.getMaxContextTokens() - tokenConfig.getTemplateReserveTokens();
+        int totalContexts = contexts.size();
+        int perFileBudget = Math.max(tokenConfig.getMinTokenPerFile(), availableBudget / totalContexts);
+
+        // 计算加权基数
+        double[] weights = new double[contexts.size()];
+        double totalWeight = 0;
+        for (int i = 0; i < contexts.size(); i++) {
+            ReviewContext ctx = contexts.get(i);
+            int diffLines = ctx.getAddedLineNumbers() != null ? ctx.getAddedLineNumbers().size() : 1;
+            diffLines = Math.max(1, diffLines); // 至少 1 行
+            double weight = diffLines;
+
+            // 新增文件惩罚
+            boolean isNew = ctx.getFilePath() != null && isLikelyNewFile(ctx);
+            if (isNew) weight *= tokenConfig.getNewFilePenalty();
+
+            // 核心模块加权
+            if (isCoreModule(ctx.getFilePath())) {
+                weight *= tokenConfig.getCoreModuleBonus();
+            }
+
+            weights[i] = weight;
+            totalWeight += weight;
+        }
+
+        // 按比例分配，保底 minTokenPerFile
+        int remainingBudget = availableBudget;
+        for (int i = 0; i < contexts.size(); i++) {
+            ReviewContext ctx = contexts.get(i);
+            int budget;
+            if (i == contexts.size() - 1) {
+                budget = Math.max(tokenConfig.getMinTokenPerFile(), remainingBudget);
+            } else {
+                budget = Math.max(tokenConfig.getMinTokenPerFile(),
+                        (int) (availableBudget * weights[i] / totalWeight));
+                remainingBudget -= budget;
+            }
+            ctx.trimToMaxTokens(budget);
+        }
+    }
+
+    /** 简单判断是否为新文件（fullContent 与 diff 内容高度吻合） */
+    private boolean isLikelyNewFile(ReviewContext ctx) {
+        if (ctx.getFullContent() == null || ctx.getDiffContent() == null) return false;
+        int contentLines = ctx.getFullContent().split("\n").length;
+        int diffLines = ctx.getDiffContent().split("\n").length;
+        return contentLines > 0 && (double) diffLines / contentLines > 0.7;
+    }
+
+    private static final java.util.Set<String> CORE_MODULE_KEYWORDS = java.util.Set.of(
+            "service/", "manager/", "controller/", "mapper/", "repository/",
+            "handler/", "interceptor/", "filter/", "config/", "listener/"
+    );
+
+    static boolean isCoreModule(String filePath) {
+        if (filePath == null) return false;
+        return CORE_MODULE_KEYWORDS.stream().anyMatch(filePath::contains);
     }
 }
