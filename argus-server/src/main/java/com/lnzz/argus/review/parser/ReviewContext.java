@@ -20,6 +20,18 @@ public class ReviewContext {
     /** 文件路径 */
     private String filePath;
 
+    /** 项目名称 */
+    private String projectName;
+
+    /** SCM 平台 */
+    private String scmProvider;
+
+    /** 提交者唯一ID */
+    private String authorId;
+
+    /** 提交者名称 */
+    private String authorName;
+
     /** 文件语言标签 */
     private String languageTag;
 

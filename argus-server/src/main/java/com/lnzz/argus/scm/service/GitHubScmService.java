@@ -128,6 +128,18 @@ public class GitHubScmService extends AbstractScmPlatformService {
     }
 
     @Override
+    public String getFileContent(ScmConfig config, String filePath, String ref) {
+        String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/contents/" + normalizeContentPath(filePath) + "?ref={ref}";
+        HttpHeaders headers = buildHeaders(config);
+        headers.setAccept(List.of(org.springframework.http.MediaType.valueOf("application/vnd.github.raw+json")));
+        try {
+            return doGet(url, headers, config.getRepoOwner(), config.getRepoName(), ref).getBody();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @Override
     public Long addPullRequestComment(ScmConfig config, ReviewTask task, String body) {
         String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/issues/{number}/comments";
         ResponseEntity<String> response = doPost(url, buildHeaders(config), Map.of("body", body),

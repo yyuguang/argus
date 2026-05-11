@@ -45,8 +45,25 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+# ==================== Actuator & Prometheus ====================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: argus-server
+
 # ==================== Argus 配置 ====================
 argus:
+  # 内部 API 鉴权
+  internal:
+    token: ${ARGUS_INTERNAL_TOKEN:argus-internal-token-change-me}
+
   # SCM 平台配置
   scm:
     gitlab:
@@ -77,6 +94,14 @@ argus:
         max-attempts: 3
         backoff-multiplier: 2
 
+  # ==================== 向量知识库配置 ====================
+  vector:
+    # 默认关闭向量检索，避免本地未配置 embedding 服务时 RedisVectorStore 初始化触发 AI 404。
+    # 需要向量知识库时，先确认 Redis Stack 与 embedding 模型可用，再设置 ARGUS_VECTOR_ENABLED=true。
+    enabled: ${ARGUS_VECTOR_ENABLED:false}
+    error-search-topk: 5
+    knowledge-min-score: 0.7
+
   # 评审配置
   review:
     # 评分阈值，低于此分数阻止合并
@@ -104,15 +129,58 @@ argus:
       poll-interval: 10000
       batch-size: 200
 
-  # 企业微信通知
+  # ==================== M7: 通知配置 ====================
   notification:
+    enabled: true
+    default-channel: wechat
     wechat:
       webhooks:
-        default: ${WECHAT_WEBHOOK_DEFAULT:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=placeholder}
-        critical: ${WECHAT_WEBHOOK_CRITICAL:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=placeholder}
+        default: ${WECHAT_WEBHOOK_DEFAULT:}
+        critical: ${WECHAT_WEBHOOK_DEFAULT:}
       rate-limit:
         same-type-interval: 60
         max-per-hour: 30
+
+    feishu:
+      enabled: false
+      webhooks:
+        default: ${FEISHU_WEBHOOK_DEFAULT:}
+
+    dingtalk:
+      enabled: false
+      webhooks:
+        default: ${DINGTALK_WEBHOOK_DEFAULT:}
+
+    # M7-A01: 路由规则（按顺序匹配，命中即停）
+    route-rules:
+      - severity: P0
+        channel: critical
+        priority: urgent
+      - severity: P1
+        channel: critical
+        priority: urgent
+      - severity: P2
+        channel: default
+        priority: normal
+      - severity: P3
+        channel: default
+        priority: suppress
+
+    # M7-A05: 静默控制
+    silence:
+      always-notify-p0p1: true
+      fingerprint-interval: 300
+      p3-interval: 3600
+      global-max-per-hour: 30
+
+    # M7-A05: 重试配置
+    retry:
+      max-retries: 3
+      backoff-seconds:
+        - 30
+        - 120
+        - 300
+      timeout: 600
 
 # ==================== 日志配置 ====================
 logging:

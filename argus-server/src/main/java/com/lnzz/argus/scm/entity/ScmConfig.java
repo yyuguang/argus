@@ -71,4 +71,18 @@ public class ScmConfig extends BaseEntity {
 
     /** 配置说明 */
     private String description;
+
+    /** 仓库级企微通知开关 0=关闭 1=开启 */
+    private Integer wechatNotifyEnabled;
+
+    /** 仓库级企微 Webhook 地址（为空则用全局默认） */
+    private String wechatNotifyWebhook;
+
+    /** 仓库级评审配置 JSON（ReviewConfig 结构） */
+    private String reviewConfig;
+
+    /** 仓库级企微通知是否开启 */
+    public boolean isWechatNotificationEnabled() {
+        return wechatNotifyEnabled == null || wechatNotifyEnabled == 1;
+    }
 }
