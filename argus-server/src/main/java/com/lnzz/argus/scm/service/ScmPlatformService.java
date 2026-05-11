@@ -42,6 +42,11 @@ public interface ScmPlatformService {
     String getFileContent(ScmConfig config, ReviewTask task, String filePath, String ref);
 
     /**
+     * 获取指定 ref 的文件内容（无 ReviewTask，用于错误源码定位场景）
+     */
+    String getFileContent(ScmConfig config, String filePath, String ref);
+
+    /**
      * 添加 PR/MR 评论
      */
     Long addPullRequestComment(ScmConfig config, ReviewTask task, String body);

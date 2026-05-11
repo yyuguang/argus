@@ -91,6 +91,7 @@ public class ReviewServiceImpl implements ReviewService {
         task.setMrIid(event.getMrIid());
         task.setMrTitle(event.getMrTitle());
         task.setMrUrl(event.getMrUrl());
+        task.setAuthorId(event.getAuthorId());
         task.setAuthorName(event.getAuthorName());
         task.setSourceBranch(event.getSourceBranch());
         task.setTargetBranch(event.getTargetBranch());

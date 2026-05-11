@@ -108,6 +108,18 @@ public class GiteeScmService extends AbstractScmPlatformService {
     }
 
     @Override
+    public String getFileContent(ScmConfig config, String filePath, String ref) {
+        String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/contents/" + normalizeContentPath(filePath)
+                + "?ref={ref}&access_token={token}";
+        try {
+            return doGet(url, buildHeaders(config),
+                    config.getRepoOwner(), config.getRepoName(), ref, config.getAccessToken()).getBody();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @Override
     public Long addPullRequestComment(ScmConfig config, ReviewTask task, String body) {
         String url = apiBaseUrl(config) + "/repos/{owner}/{repo}/pulls/{number}/comments?access_token={token}";
         ResponseEntity<String> response = doPost(url, buildHeaders(config), Map.of("body", body),

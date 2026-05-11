@@ -22,7 +22,7 @@ export const menuGroups = [
       {
         path: '/integration/review-tasks',
         label: '评审任务',
-        description: '查看评审状态、评分与失败原因',
+        description: '查看评审状态、评分与执行进展',
         icon: '▤',
       },
       {
@@ -30,6 +30,17 @@ export const menuGroups = [
         label: 'Webhook 指引',
         description: '查看各平台回调地址与配置说明',
         icon: '↗',
+      },
+    ],
+  },
+  {
+    title: '质量治理',
+    items: [
+      {
+        path: '/quality/personal',
+        label: '个人代码质量',
+        description: '查看提交者画像、趋势与高频问题',
+        icon: '◈',
       },
     ],
   },

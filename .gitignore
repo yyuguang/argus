@@ -33,3 +33,5 @@ dist/
 
 ### VS Code ###
 .vscode/
+./logs/
+logs/

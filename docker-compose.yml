@@ -24,12 +24,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== Redis ====================
+  # ==================== Redis Stack（向量检索 + JSON + 全文搜索） ====================
   argus-redis:
-    image: redis:7-alpine
+    image: redis/redis-stack:7.4.0-v1
     container_name: argus-redis
     ports:
       - "6379:6379"
+      - "8001:8001"   # RedisInsight 管理界面
     volumes:
       - argus-redis-data:/data
     restart: unless-stopped

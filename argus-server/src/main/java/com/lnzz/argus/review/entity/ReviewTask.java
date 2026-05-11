@@ -48,6 +48,9 @@ public class ReviewTask extends BaseEntity {
     /** PR/MR 链接 */
     private String mrUrl;
 
+    /** 提交者唯一ID */
+    private String authorId;
+
     /** 提交者 */
     private String authorName;
 

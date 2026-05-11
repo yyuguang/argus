@@ -4,6 +4,7 @@ import DashboardPage from '../views/DashboardPage.vue'
 import LoginPage from '../views/LoginPage.vue'
 import ReviewTaskPage from '../views/ReviewTaskPage.vue'
 import ScmConfigPage from '../views/ScmConfigPage.vue'
+import PersonalQualityPage from '../views/PersonalQualityPage.vue'
 import WebhookGuidePage from '../views/WebhookGuidePage.vue'
 import SettingsPage from '../views/SettingsPage.vue'
 
@@ -52,6 +53,15 @@ const router = createRouter({
       meta: {
         title: '评审任务中心',
         section: '代码接入',
+      },
+    },
+    {
+      path: '/quality/personal',
+      name: 'personal-quality',
+      component: PersonalQualityPage,
+      meta: {
+        title: '个人代码质量',
+        section: '质量治理',
       },
     },
     {

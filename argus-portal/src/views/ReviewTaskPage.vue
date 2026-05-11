@@ -5,7 +5,7 @@
         <p class="eyebrow">Review Task Center</p>
         <h2>评审任务中心</h2>
         <p class="page-copy">
-          统一查看代码评审任务的执行状态、评分结果、平台来源和失败原因。
+          统一查看代码评审任务的执行状态、评分结果、平台来源和最近进展。
           这是公司内部运维和研发负责人最常用的任务面板之一。
         </p>
       </div>
@@ -118,11 +118,6 @@
             {{ formatDate(row.updateTime || row.createTime) }}
           </template>
         </el-table-column>
-        <el-table-column label="失败原因" min-width="240">
-          <template #default="{ row }">
-            <span class="cell-sub">{{ row.errorMessage || '-' }}</span>
-          </template>
-        </el-table-column>
         <el-table-column label="操作" fixed="right" min-width="110">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
@@ -163,6 +158,16 @@
             <div><span>状态</span><strong>{{ selectedTask.status || '-' }}</strong></div>
             <div><span>评分</span><strong>{{ selectedTask.totalScore ?? '-' }} / {{ selectedTask.scoreLevel || '-' }}</strong></div>
           </div>
+        </div>
+
+        <div v-if="selectedTask.errorMessage" class="detail-block">
+          <h4>失败原因</h4>
+          <el-alert
+            :title="selectedTask.errorMessage"
+            type="error"
+            :closable="false"
+            show-icon
+          />
         </div>
 
         <div class="detail-block">

@@ -102,6 +102,12 @@ public class GitLabScmService extends AbstractScmPlatformService {
     }
 
     @Override
+    public String getFileContent(ScmConfig config, String filePath, String ref) {
+        String url = apiBaseUrl(config) + "/projects/{projectId}/repository/files/{filePath}/raw?ref={ref}";
+        return doGet(url, buildHeaders(config), config.getProjectId(), encodePath(filePath), ref).getBody();
+    }
+
+    @Override
     public Long addPullRequestComment(ScmConfig config, ReviewTask task, String body) {
         String url = apiBaseUrl(config) + "/projects/{projectId}/merge_requests/{mrIid}/notes";
         ResponseEntity<String> response = doPost(url, buildHeaders(config), Map.of("body", body),

@@ -373,8 +373,10 @@ public class PromptBuilder {
             ## 输出格式要求
 
             请严格按照以下 JSON 格式输出，不要输出任何其他内容：
+            - 首字符必须是 `{`，末字符必须是 `}`
+            - 禁止输出“好的”“收到”“以下是”等任何寒暄或说明
+            - 禁止使用 Markdown 代码块包裹 JSON
 
-            ```json
             {
               "scores": {
                 "compliance": 85,
@@ -406,6 +408,5 @@ public class PromptBuilder {
               ],
               "summary": "本次提交整体质量中等，主要问题在于外部接口返回值缺少判空处理，建议补充后重新提交"
             }
-            ```
             """;
 }

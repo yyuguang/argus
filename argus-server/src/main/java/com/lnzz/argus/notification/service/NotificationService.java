@@ -1,135 +1,70 @@
 package com.lnzz.argus.notification.service;
 
-import com.lnzz.argus.notification.entity.NotificationRecord;
-import com.lnzz.argus.notification.mapper.NotificationRecordMapper;
+import com.lnzz.argus.error.entity.ErrorAnalysis;
+import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.review.ai.ScoreCalculator;
+import com.lnzz.argus.review.config.ReviewConfig;
 import com.lnzz.argus.review.entity.ReviewTask;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
-
-import java.time.LocalDateTime;
-import java.util.concurrent.TimeUnit;
+import com.lnzz.argus.scm.entity.ScmConfig;
 
 /**
- * M7: 通知服务
- * <p>统一通知入口，支持评审通知、错误告警、报告推送</p>
+ * 通知服务接口
+ * <p>统一通知入口，支持评审通知、错误告警，含去重、路由、静默控制、失败重试全链路</p>
  *
  * @author lnzz
  * @since 1.0.0
  */
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class NotificationService {
-
-    private final WechatWebhookClient wechatClient;
-    private final NotificationRecordMapper recordMapper;
-    private final StringRedisTemplate redisTemplate;
-
-    private static final String RATE_LIMIT_KEY_PREFIX = "argus:notify:rate:";
+public interface NotificationService {
 
     /**
-     * M7-02: 发送评审结果通知
+     * 发送代码评审结果通知
+     * <p>评审通过走 default 通道，不通过走 critical 通道。同一任务 60s 内不重复发送</p>
+     *
+     * @param task  评审任务（含项目名、MR链接、分支信息等）
+     * @param score 评分结果（总分、等级、是否通过、各维度扣分数量）
+     * @return true 发送成功，false 发送失败（含全部重试仍失败）
      */
-    public boolean sendReviewNotification(ReviewTask task, ScoreCalculator.ScoreResult score) {
-        String dedupKey = "REVIEW:" + task.getId();
-        if (isDuplicate(dedupKey)) {
-            log.info("评审通知已发送过, taskId={}", task.getId());
-            return true;
-        }
-
-        String emoji = score.isPassed() ? "✅" : "❌";
-        String status = score.isPassed() ? "通过" : "不通过（阻止合并）";
-
-        StringBuilder content = new StringBuilder();
-        content.append("## ").append(emoji).append(" AI 代码评审通知\n\n");
-        content.append("> **项目**: ").append(task.getProjectName()).append("\n");
-        content.append("> **MR**: #").append(task.getMrIid()).append(" ").append(task.getMrTitle()).append("\n");
-        content.append("> **提交者**: ").append(task.getAuthorName()).append("\n");
-        content.append("> **分支**: `").append(task.getSourceBranch()).append("` → `").append(task.getTargetBranch()).append("`\n\n");
-        content.append("**评分**: ").append(score.getTotalScore()).append("/100（等级 ").append(score.getScoreLevel()).append("）\n");
-        content.append("**结果**: ").append(status).append("\n\n");
-
-        if (score.getCriticalCount() > 0 || score.getMajorCount() > 0) {
-            content.append("**问题统计**: 🔴致命 ").append(score.getCriticalCount())
-                    .append(" / 🟡严重 ").append(score.getMajorCount())
-                    .append(" / 🔵一般 ").append(score.getMinorCount()).append("\n\n");
-        }
-
-        if (task.getMrUrl() != null) {
-            content.append("[查看详情](").append(task.getMrUrl()).append(")\n");
-        }
-
-        // 选择通知通道
-        String channel = score.isPassed() ? "default" : "critical";
-        boolean success;
-        try {
-            success = wechatClient.sendMarkdown(channel, content.toString());
-        } catch (Exception e) {
-            log.error("发送评审通知失败, taskId={}", task.getId(), e);
-            success = false;
-        }
-
-        // 记录通知
-        saveRecord("REVIEW", task.getId(), "REVIEW_TASK",
-                content.substring(0, Math.min(content.length(), 500)), success);
-        return success;
-    }
+    boolean sendReviewNotification(ReviewTask task, ScoreCalculator.ScoreResult score);
 
     /**
-     * M7-04: 发送错误告警通知
+     * 发送代码评审结果通知（支持仓库级 webhook 覆盖与评审配置）
+     *
+     * @param task 评审任务
+     * @param score 评分结果
+     * @param scmConfig SCM 配置
+     * @param reviewConfig 评审配置
+     * @return true 发送成功，false 发送失败
      */
-    @Async
-    public void sendErrorAlertNotification(String appName, String errorType, String errorMessage,
-                                            String severity, String rootCause) {
-        String dedupKey = "ERROR:" + appName + ":" + errorType;
-        if (isDuplicate(dedupKey)) {
-            log.info("错误告警已发送过, app={}, type={}", appName, errorType);
-            return;
-        }
-
-        StringBuilder content = new StringBuilder();
-        content.append("## 🚨 生产错误 AI 诊断告警\n\n");
-        content.append("> **应用**: ").append(appName).append("\n");
-        content.append("> **严重度**: ").append(severity).append("\n");
-        content.append("> **错误类型**: ").append(errorType).append("\n\n");
-        content.append("**错误信息**: ").append(errorMessage).append("\n\n");
-        if (rootCause != null) {
-            content.append("**AI 分析**: ").append(rootCause).append("\n");
-        }
-
-        wechatClient.sendMarkdown("critical", content.toString());
-    }
+    boolean sendReviewNotification(ReviewTask task, ScoreCalculator.ScoreResult score,
+                                   ScmConfig scmConfig, ReviewConfig reviewConfig);
 
     /**
-     * M7-06: 频率控制（同一类型通知 60 秒内不重复发送）
+     * 发送错误告警通知（完整链路，异步）
+     * <p>处理流程：路由匹配 → 静默检查 → 模板构建 → 企微发送 → 飞书/钉钉（预留） → 记录落库</p>
+     * <p>静默规则：</p>
+     * <ul>
+     *   <li>P0/P1 永不禁用（alwaysNotifyP0P1=true）</li>
+     *   <li>同指纹在 fingerprintInterval 秒内不重复通知</li>
+     *   <li>P3 独立静默间隔（p3Interval）</li>
+     *   <li>全局每小时上限（globalMaxPerHour）</li>
+     * </ul>
+     * <p>重试策略：最多 3 次，退避间隔 30s/120s/300s</p>
+     *
+     * @param event    错误事件（含严重度、错误类型、指纹等路由和静默决策所需字段）
+     * @param analysis AI 分析结果（含根因、修复建议、置信度等）
      */
-    private boolean isDuplicate(String key) {
-        String redisKey = RATE_LIMIT_KEY_PREFIX + key;
-        Boolean exists = redisTemplate.hasKey(redisKey);
-        if (Boolean.TRUE.equals(exists)) {
-            return true;
-        }
-        redisTemplate.opsForValue().set(redisKey, "1", 60, TimeUnit.SECONDS);
-        return false;
-    }
+    void sendErrorAlert(ErrorEvent event, ErrorAnalysis analysis);
 
     /**
-     * M7-07: 保存通知记录
+     * 兼容旧接口的错误告警（异步）
+     * <p>使用基本字段构造虚拟 ErrorEvent/ErrorAnalysis，复用完整 sendErrorAlert 链路</p>
+     *
+     * @param appName      应用名称
+     * @param errorType    错误类型（NULL_POINTER / HTTP_500 等）
+     * @param errorMessage 错误消息
+     * @param severity     严重度 P0/P1/P2/P3
+     * @param rootCause    根因描述
      */
-    private void saveRecord(String type, Long refId, String refType, String summary, boolean success) {
-        NotificationRecord record = new NotificationRecord();
-        record.setType(type);
-        record.setChannel("WECHAT");
-        record.setRefId(refId);
-        record.setRefType(refType);
-        record.setContentSummary(summary);
-        record.setStatus(success ? "SENT" : "FAILED");
-        record.setRetryCount(0);
-        record.setSentAt(success ? LocalDateTime.now() : null);
-        recordMapper.insert(record);
-    }
+    void sendErrorAlertLegacy(String appName, String errorType, String errorMessage,
+                              String severity, String rootCause);
 }

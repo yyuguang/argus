@@ -68,6 +68,9 @@ public class ScmConfigController {
         config.setReviewParallelism(request.getReviewParallelism());
         config.setEnabled(request.getEnabled());
         config.setDescription(request.getDescription());
+        config.setWechatNotifyEnabled(request.getWechatNotifyEnabled());
+        config.setWechatNotifyWebhook(request.getWechatNotifyWebhook());
+        config.setReviewConfig(request.getReviewConfig());
         return config;
     }
 
@@ -90,7 +93,10 @@ public class ScmConfigController {
                 config.getMaxContextTokens(),
                 config.getReviewParallelism(),
                 config.getEnabled(),
-                config.getDescription()
+                config.getDescription(),
+                config.getWechatNotifyEnabled(),
+                scmConfigService.maskSecret(config.getWechatNotifyWebhook()),
+                config.getReviewConfig()
         );
     }
 
@@ -114,6 +120,9 @@ public class ScmConfigController {
         private Integer reviewParallelism;
         private Boolean enabled;
         private String description;
+        private Integer wechatNotifyEnabled;
+        private String wechatNotifyWebhook;
+        private String reviewConfig;
     }
 
     public record ScmConfigView(
@@ -134,7 +143,10 @@ public class ScmConfigController {
             Integer maxContextTokens,
             Integer reviewParallelism,
             Boolean enabled,
-            String description
+            String description,
+            Integer wechatNotifyEnabled,
+            String wechatNotifyWebhook,
+            String reviewConfig
     ) {
     }
 }

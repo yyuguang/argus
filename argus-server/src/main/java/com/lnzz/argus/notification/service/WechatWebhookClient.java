@@ -24,18 +24,27 @@ public class WechatWebhookClient {
     private final NotificationProperties properties;
     private final RestTemplate restTemplate = new RestTemplate();
 
+    /** 企微 Markdown 消息字符上限 */
+    private static final int WECHAT_MAX_CHARS = 4096;
+
     /**
-     * 发送 Markdown 消息
+     * 发送 Markdown 消息，超长自动截断
      *
      * @param channel 通道名（对应配置中的 webhooks key）
      * @param content Markdown 内容
      * @return 是否成功
      */
     public boolean sendMarkdown(String channel, String content) {
-        String webhookUrl = getWebhookUrl(channel);
+        String webhookUrl = getWebhookUrl(channel, null);
         if (webhookUrl == null) {
             log.error("企微通道不存在: channel={}", channel);
             return false;
+        }
+
+        if (content != null && content.length() > WECHAT_MAX_CHARS) {
+            log.warn("企微消息过长被截断: original={}, max={}", content.length(), WECHAT_MAX_CHARS);
+            content = content.substring(0, WECHAT_MAX_CHARS - 30)
+                    + "\n\n> ⚠️ 内容过长已截断";
         }
 
         Map<String, Object> body = Map.of(
@@ -43,6 +52,34 @@ public class WechatWebhookClient {
                 "markdown", Map.of("content", content)
         );
 
+        return doSend(webhookUrl, body);
+    }
+
+    /**
+     * 发送 Markdown 消息到指定 webhook，仓库级 webhook 优先。
+     *
+     * @param channel 通道名
+     * @param content Markdown 内容
+     * @param customWebhookUrl 自定义 webhook 地址
+     * @return 是否成功
+     */
+    public boolean sendMarkdown(String channel, String content, String customWebhookUrl) {
+        String webhookUrl = getWebhookUrl(channel, customWebhookUrl);
+        if (webhookUrl == null) {
+            log.error("企微通道不存在: channel={}", channel);
+            return false;
+        }
+
+        if (content != null && content.length() > WECHAT_MAX_CHARS) {
+            log.warn("企微消息过长被截断: original={}, max={}", content.length(), WECHAT_MAX_CHARS);
+            content = content.substring(0, WECHAT_MAX_CHARS - 30)
+                    + "\n\n> ⚠️ 内容过长已截断";
+        }
+
+        Map<String, Object> body = Map.of(
+                "msgtype", "markdown",
+                "markdown", Map.of("content", content)
+        );
         return doSend(webhookUrl, body);
     }
 
@@ -55,7 +92,7 @@ public class WechatWebhookClient {
      * @return 是否成功
      */
     public boolean sendText(String channel, String content, java.util.List<String> mentionUsers) {
-        String webhookUrl = getWebhookUrl(channel);
+        String webhookUrl = getWebhookUrl(channel, null);
         if (webhookUrl == null) {
             log.error("企微通道不存在: channel={}", channel);
             return false;
@@ -94,7 +131,14 @@ public class WechatWebhookClient {
         }
     }
 
-    private String getWebhookUrl(String channel) {
+    String getWebhookUrl(String channel, String customWebhookUrl) {
+        if (customWebhookUrl != null && !customWebhookUrl.isBlank()) {
+            return customWebhookUrl;
+        }
+        String envWebhookUrl = System.getenv("WECHAT_WEBHOOK_DEFAULT");
+        if (envWebhookUrl != null && !envWebhookUrl.isBlank()) {
+            return envWebhookUrl;
+        }
         Map<String, String> webhooks = properties.getWechat().getWebhooks();
         if (webhooks == null) {
             return null;

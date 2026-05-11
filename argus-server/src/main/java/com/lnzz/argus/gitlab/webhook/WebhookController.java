@@ -1,6 +1,7 @@
 package com.lnzz.argus.gitlab.webhook;
 
 import com.lnzz.argus.common.result.Result;
+import com.lnzz.argus.review.service.ReviewTriggerRuleEvaluator;
 import com.lnzz.argus.review.service.ReviewService;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.model.PullRequestEvent;
@@ -31,6 +32,7 @@ public class WebhookController {
 
     private final ScmPlatformServiceFactory scmPlatformServiceFactory;
     private final ScmConfigService scmConfigService;
+    private final ReviewTriggerRuleEvaluator reviewTriggerRuleEvaluator;
     private final ReviewService reviewService;
 
     /**
@@ -66,11 +68,14 @@ public class WebhookController {
             return Result.fail(401, "Webhook 签名无效");
         }
 
-        // 仅处理 dev → test 的 open/update 事件
-        if (!event.isReviewable()) {
-            log.info("非评审目标PR/MR，忽略: provider={}, {}→{}, state={}",
-                    provider, event.getSourceBranch(), event.getTargetBranch(), event.getMrState());
-            return Result.success("非评审目标PR/MR，已忽略", Map.of("action", "skipped"));
+        ReviewTriggerRuleEvaluator.TriggerDecision decision = reviewTriggerRuleEvaluator.evaluate(event, config);
+        if (!decision.shouldReview()) {
+            log.info("PR/MR 未命中评审规则，忽略: provider={}, {}→{}, state={}, reason={}",
+                    provider, event.getSourceBranch(), event.getTargetBranch(), event.getMrState(), decision.reason());
+            return Result.success("非评审目标PR/MR，已忽略", Map.of(
+                    "action", "skipped",
+                    "reason", decision.reason()
+            ));
         }
 
         // M1-05: 异步触发评审

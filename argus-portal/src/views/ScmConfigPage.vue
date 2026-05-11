@@ -1,307 +1,598 @@
 <template>
-  <section class="page">
-    <header class="page-banner">
+  <section class="page scm-page">
+    <div class="scm-titlebar">
       <div>
-        <p class="eyebrow">Repository Access</p>
-        <h1>Git 仓库配置</h1>
-        <p class="hero-copy">
-          在这里维护 GitLab、GitHub、Gitee 的仓库地址、访问令牌和 Webhook 密钥。
-          Argus 会按仓库配置自动匹配 Webhook、拉取代码并回写评审结果。
+        <p class="eyebrow">Repository Governance</p>
+        <h2>SCM 配置管理</h2>
+        <p>
+          统一管理 GitLab、GitHub、Gitee 仓库接入、Webhook 鉴权、代码解析规则和仓库级 AI 评审策略。
         </p>
       </div>
+      <div class="title-actions">
+        <el-button :icon="Refresh" :loading="loading" @click="loadConfigs">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreateDrawer">新增仓库</el-button>
+      </div>
+    </div>
 
-      <div class="banner-note">
-        <div>
-          <span class="metric-label">已接入仓库</span>
-          <strong class="metric-value">{{ configs.length }}</strong>
+    <div class="scm-stats">
+      <article class="scm-stat">
+        <span>已接入仓库</span>
+        <strong>{{ configs.length }}</strong>
+        <small>全部 SCM 配置</small>
+      </article>
+      <article class="scm-stat">
+        <span>启用中</span>
+        <strong>{{ enabledCount }}</strong>
+        <small>可匹配 Webhook</small>
+      </article>
+      <article class="scm-stat">
+        <span>触发规则</span>
+        <strong>{{ triggerConfiguredCount }}</strong>
+        <small>已配置 reviewConfig.trigger</small>
+      </article>
+      <article class="scm-stat">
+        <span>通知开启</span>
+        <strong>{{ notifyEnabledCount }}</strong>
+        <small>仓库级企微通知</small>
+      </article>
+    </div>
+
+    <section class="panel-card scm-workbench">
+      <div class="scm-toolbar">
+        <div class="toolbar-filters">
+          <el-select v-model="filters.provider" clearable placeholder="全部平台" style="width: 150px">
+            <el-option label="GitLab" value="gitlab" />
+            <el-option label="GitHub" value="github" />
+            <el-option label="Gitee" value="gitee" />
+          </el-select>
+          <el-select v-model="filters.enabled" clearable placeholder="全部状态" style="width: 150px">
+            <el-option label="启用" value="enabled" />
+            <el-option label="停用" value="disabled" />
+          </el-select>
+          <el-input
+            v-model.trim="filters.keyword"
+            clearable
+            placeholder="搜索仓库、Owner、API 地址"
+            style="width: 280px"
+          />
         </div>
-        <div>
-          <span class="metric-label">启用中</span>
-          <strong class="metric-value">{{ enabledCount }}</strong>
+        <div class="toolbar-summary">
+          当前展示 <strong>{{ filteredConfigs.length }}</strong> 条配置
         </div>
       </div>
-    </header>
 
-    <section class="workspace">
-      <div class="panel-card">
-        <div class="card-header">
-          <div>
-            <h2>{{ isEditing ? '编辑仓库配置' : '新增仓库配置' }}</h2>
-            <p>支持通过仓库 ID 或 owner/repo 的方式建立映射，并配置项目级代码解析规则。</p>
-          </div>
-          <button v-if="isEditing" class="ghost-button" type="button" @click="resetForm">
-            取消编辑
-          </button>
-        </div>
+      <el-alert
+        v-if="errorMessage"
+        class="scm-alert"
+        :title="errorMessage"
+        type="error"
+        show-icon
+        :closable="false"
+      />
 
-        <form class="config-form" @submit.prevent="handleSubmit">
-          <div class="field-grid">
-            <label class="field">
-              <span>SCM 平台</span>
-              <select v-model="form.scmProvider" required>
-                <option value="gitlab">GitLab</option>
-                <option value="github">GitHub</option>
-                <option value="gitee">Gitee</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>仓库/项目 ID</span>
-              <input
-                v-model="form.projectId"
-                type="number"
-                min="0"
-                placeholder="例如 123456"
-              />
-            </label>
-
-            <label class="field">
-              <span>仓库归属</span>
-              <input v-model.trim="form.repoOwner" type="text" placeholder="例如 lnzz-team" />
-            </label>
-
-            <label class="field">
-              <span>仓库名称</span>
-              <input v-model.trim="form.repoName" type="text" placeholder="例如 argus" />
-            </label>
-
-            <label class="field field-span-2">
-              <span>仓库显示名称</span>
-              <input
-                v-model.trim="form.projectName"
-                type="text"
-                placeholder="例如 lnzz-team/argus"
-              />
-            </label>
-
-            <label class="field field-span-2">
-              <span>API Base URL</span>
-              <input
-                v-model.trim="form.apiBaseUrl"
-                type="text"
-                :placeholder="providerPlaceholders[form.scmProvider].apiBaseUrl"
-              />
-            </label>
-
-            <label class="field field-span-2">
-              <span>Web Base URL</span>
-              <input
-                v-model.trim="form.webBaseUrl"
-                type="text"
-                :placeholder="providerPlaceholders[form.scmProvider].webBaseUrl"
-              />
-            </label>
-
-            <label class="field field-span-2">
-              <span>访问 Token</span>
-              <input
-                v-model.trim="form.accessToken"
-                type="password"
-                :placeholder="isEditing ? '留空表示保留原有 Token' : '输入访问 Token'"
-              />
-            </label>
-
-            <label class="field field-span-2">
-              <span>Webhook Secret</span>
-              <input
-                v-model.trim="form.webhookSecret"
-                type="password"
-                :placeholder="isEditing ? '留空表示保留原有 Secret' : '输入 Webhook Secret'"
-              />
-            </label>
-
-            <label class="field field-span-2">
-              <span>备注说明</span>
-              <textarea
-                v-model.trim="form.description"
-                rows="4"
-                placeholder="例如：AI 评审主仓库 / 测试环境接入"
-              />
-            </label>
-          </div>
-
-          <div class="subsection">
-            <div class="subsection-header">
+      <el-table :data="filteredConfigs" v-loading="loading" border class="scm-table">
+        <el-table-column label="仓库" min-width="280" fixed>
+          <template #default="{ row }">
+            <div class="repo-cell">
               <div>
-                <h3>代码解析策略</h3>
-                <p>用于适配不同项目的包名、模块结构和评审性能，不再在代码里写死 Argus 规则。</p>
+                <strong>{{ row.projectName || composeRepoName(row) }}</strong>
+                <span>{{ composeRepoName(row) }}</span>
               </div>
-              <button class="ghost-button" type="button" @click="fillArgusExample">
-                填入 Argus 示例
-              </button>
+              <el-tag :type="providerTagType(row.scmProvider)" effect="light">
+                {{ providerLabel(row.scmProvider) }}
+              </el-tag>
             </div>
+          </template>
+        </el-table-column>
 
-            <div class="field-grid">
-              <label class="field field-span-2">
-                <span>基础包列表</span>
-                <textarea
-                  v-model.trim="form.basePackages"
-                  rows="3"
-                  placeholder='例如：["com.lnzz.argus"]'
-                />
-              </label>
+        <el-table-column label="接入定位" min-width="180">
+          <template #default="{ row }">
+            <div class="table-main">{{ row.projectId ? `Project ID: ${row.projectId}` : 'Owner / Repo' }}</div>
+            <div class="table-sub">{{ row.repoOwner && row.repoName ? `${row.repoOwner}/${row.repoName}` : '-' }}</div>
+          </template>
+        </el-table-column>
 
-              <label class="field field-span-2">
-                <span>模块源码根列表</span>
-                <textarea
-                  v-model.trim="form.moduleSourceRoots"
-                  rows="4"
-                  placeholder='例如：["argus-common/src/main/java","argus-server/src/main/java"]'
-                />
-              </label>
+        <el-table-column label="触发规则" min-width="240">
+          <template #default="{ row }">
+            <div class="table-main">{{ triggerSummary(row) }}</div>
+            <div class="table-sub">{{ branchSummary(row) }}</div>
+          </template>
+        </el-table-column>
 
-              <label class="field field-span-2">
-                <span>包到模块映射</span>
-                <textarea
-                  v-model.trim="form.packageModuleMappings"
-                  rows="7"
-                  placeholder='例如：[{"packagePrefix":"com.demo.common","sourceRoot":"demo-common/src/main/java"}]'
-                />
-              </label>
+        <el-table-column label="评审策略" min-width="220">
+          <template #default="{ row }">
+            <div class="table-main">阈值 {{ scoreThreshold(row) }} 分</div>
+            <div class="table-sub">文件上限 {{ maxReviewFiles(row) }}，并发 {{ row.reviewParallelism || 3 }}</div>
+          </template>
+        </el-table-column>
 
-              <label class="field">
-                <span>最大关联类数</span>
-                <input
-                  v-model="form.maxRelatedClasses"
-                  type="number"
-                  min="1"
-                  placeholder="默认 5"
-                />
-              </label>
+        <el-table-column label="通知" min-width="150">
+          <template #default="{ row }">
+            <el-tag :type="isNotifyEnabled(row) ? 'success' : 'info'" effect="light">
+              {{ isNotifyEnabled(row) ? '已开启' : '已关闭' }}
+            </el-tag>
+            <div class="table-sub">{{ row.wechatNotifyWebhook ? '仓库级 Webhook' : '全局默认' }}</div>
+          </template>
+        </el-table-column>
 
-              <label class="field">
-                <span>最大上下文 Token</span>
-                <input
-                  v-model="form.maxContextTokens"
-                  type="number"
-                  min="1000"
-                  step="1000"
-                  placeholder="默认 16000"
-                />
-              </label>
+        <el-table-column label="状态" min-width="120">
+          <template #default="{ row }">
+            <el-switch
+              :model-value="Boolean(row.enabled)"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+              @change="toggleEnabled(row)"
+            />
+          </template>
+        </el-table-column>
 
-              <label class="field">
-                <span>评审并发度</span>
-                <input
-                  v-model="form.reviewParallelism"
-                  type="number"
-                  min="1"
-                  placeholder="默认 3"
-                />
-              </label>
+        <el-table-column label="API 地址" min-width="260">
+          <template #default="{ row }">
+            <el-tooltip :content="row.apiBaseUrl || providerDefaults[row.scmProvider]?.apiBaseUrl || '-'" placement="top">
+              <span class="ellipsis-text">{{ row.apiBaseUrl || providerDefaults[row.scmProvider]?.apiBaseUrl || '-' }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
 
-              <div class="field">
-                <span>配置建议</span>
-                <div class="hint-card">
-                  <strong>通用项目建议</strong>
-                  <p>先只配基础包和源码根，确认路径解析稳定后，再细化包到模块映射。</p>
-                </div>
-              </div>
-            </div>
-          </div>
+        <el-table-column label="操作" fixed="right" width="150">
+          <template #default="{ row }">
+            <el-button link type="primary" :icon="Edit" @click="openEditDrawer(row)">编辑</el-button>
+            <el-dropdown trigger="click">
+              <el-button link :icon="MoreFilled">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item :icon="CopyDocument" @click="copyWebhook(row)">复制 Webhook 地址</el-dropdown-item>
+                  <el-dropdown-item :icon="View" @click="openDetailDrawer(row)">查看详情</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </el-table-column>
+      </el-table>
 
-          <label class="switch">
-            <input v-model="form.enabled" type="checkbox" />
-            <span>启用该仓库配置</span>
-          </label>
-
-          <div v-if="errorMessage" class="status-banner error">{{ errorMessage }}</div>
-          <div v-if="successMessage" class="status-banner success">{{ successMessage }}</div>
-
-          <div class="form-actions">
-            <button class="primary-button" type="submit" :disabled="submitting">
-              {{ submitting ? '提交中...' : isEditing ? '保存修改' : '创建配置' }}
-            </button>
-            <button class="secondary-button" type="button" :disabled="loading" @click="loadConfigs">
-              刷新列表
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <div class="panel-card">
-        <div class="card-header">
-          <div>
-            <h2>配置列表</h2>
-            <p>点击任意配置可回填到左侧表单继续编辑。</p>
-          </div>
-        </div>
-
-        <div class="table-wrap">
-          <table class="config-table">
-            <thead>
-              <tr>
-                <th>平台</th>
-                <th>仓库</th>
-                <th>项目 ID</th>
-                <th>API 地址</th>
-                <th>并发</th>
-                <th>Token</th>
-                <th>Secret</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody v-if="configs.length">
-              <tr v-for="item in configs" :key="item.id">
-                <td>
-                  <span class="provider-badge" :data-provider="item.scmProvider">
-                    {{ item.scmProvider }}
-                  </span>
-                </td>
-                <td>
-                  <div class="repo-name">{{ item.projectName || composeRepoName(item) }}</div>
-                  <div class="repo-sub">{{ composeRepoName(item) }}</div>
-                </td>
-                <td>{{ item.projectId || '-' }}</td>
-                <td class="api-url">{{ item.apiBaseUrl || '-' }}</td>
-                <td>{{ item.reviewParallelism || 3 }}</td>
-                <td>{{ item.accessToken || '-' }}</td>
-                <td>{{ item.webhookSecret || '-' }}</td>
-                <td>
-                  <span class="status-pill" :class="item.enabled ? 'on' : 'off'">
-                    {{ item.enabled ? '启用' : '停用' }}
-                  </span>
-                </td>
-                <td>
-                  <button class="table-link" type="button" @click="editConfig(item)">编辑</button>
-                </td>
-              </tr>
-            </tbody>
-            <tbody v-else>
-              <tr>
-                <td colspan="9">
-                  <div class="empty-state">
-                    <p>{{ loading ? '正在加载配置...' : '还没有仓库配置，先在左侧新增一条。' }}</p>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <el-empty v-if="!loading && !filteredConfigs.length" description="暂无匹配的仓库配置" />
     </section>
+
+    <el-drawer
+      v-model="drawerVisible"
+      :title="drawerMode === 'create' ? '新增仓库配置' : '编辑仓库配置'"
+      size="820px"
+      destroy-on-close
+      class="scm-drawer"
+    >
+      <el-form ref="formRef" :model="form" label-position="top" class="scm-form">
+        <el-tabs v-model="activeTab">
+          <el-tab-pane name="basic">
+            <template #label>
+              <span class="tab-label"><el-icon><Connection /></el-icon>基础信息</span>
+            </template>
+
+            <div class="form-section">
+              <div class="section-title">
+                <h3>仓库定位</h3>
+                <p>项目 ID 与 Owner/Repo 至少填写一种，用于 Webhook 事件匹配。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="SCM 平台" required>
+                    <el-segmented v-model="form.scmProvider" :options="providerOptions" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="项目 ID">
+                    <el-input-number v-model="form.projectId" :min="0" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="启用状态">
+                    <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <el-row :gutter="16">
+                <el-col :span="12">
+                  <el-form-item label="仓库归属">
+                    <el-input v-model.trim="form.repoOwner" placeholder="例如 lnzz-team" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="仓库名称">
+                    <el-input v-model.trim="form.repoName" placeholder="例如 argus" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <el-form-item label="仓库显示名称">
+                <el-input v-model.trim="form.projectName" placeholder="例如 lnzz-team/argus" />
+              </el-form-item>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                <h3>服务地址</h3>
+                <p>留空时使用后端平台默认值；私有化部署建议显式配置。</p>
+              </div>
+              <el-form-item label="API Base URL">
+                <el-input v-model.trim="form.apiBaseUrl" :placeholder="providerDefaults[form.scmProvider].apiBaseUrl" />
+              </el-form-item>
+              <el-form-item label="Web Base URL">
+                <el-input v-model.trim="form.webBaseUrl" :placeholder="providerDefaults[form.scmProvider].webBaseUrl" />
+              </el-form-item>
+              <el-form-item label="备注说明">
+                <el-input v-model.trim="form.description" type="textarea" :rows="3" placeholder="例如：核心业务仓库 / 测试环境接入" />
+              </el-form-item>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="secret">
+            <template #label>
+              <span class="tab-label"><el-icon><Key /></el-icon>鉴权</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>访问凭证</h3>
+                <p>编辑时留空表示保留原值。密钥只会脱敏展示，不会在列表中明文显示。</p>
+              </div>
+              <el-form-item label="访问 Token">
+                <el-input
+                  v-model.trim="form.accessToken"
+                  type="password"
+                  show-password
+                  :placeholder="drawerMode === 'edit' ? '留空表示保留原有 Token' : '输入访问 Token'"
+                />
+              </el-form-item>
+              <el-form-item label="Webhook Secret">
+                <el-input
+                  v-model.trim="form.webhookSecret"
+                  type="password"
+                  show-password
+                  :placeholder="drawerMode === 'edit' ? '留空表示保留原有 Secret' : '输入 Webhook Secret'"
+                />
+              </el-form-item>
+              <el-form-item label="Webhook 地址">
+                <el-input :model-value="webhookUrl" readonly>
+                  <template #append>
+                    <el-button :icon="CopyDocument" @click="copyText(webhookUrl)">复制</el-button>
+                  </template>
+                </el-input>
+              </el-form-item>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="trigger">
+            <template #label>
+              <span class="tab-label"><el-icon><Setting /></el-icon>触发规则</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>评审触发规则</h3>
+                <p>用于替代代码里的目标分支写死逻辑，按仓库独立控制 PR/MR 是否进入 AI 评审。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="启用触发">
+                    <el-switch v-model="form.reviewConfig.trigger.enabled" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="16">
+                  <el-form-item label="分支模式">
+                    <el-segmented v-model="form.reviewConfig.trigger.branchMode" :options="branchModeOptions" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-form-item label="事件类型">
+                <el-checkbox-group v-model="form.reviewConfig.trigger.eventTypes">
+                  <el-checkbox value="opened">opened</el-checkbox>
+                  <el-checkbox value="update">update</el-checkbox>
+                  <el-checkbox value="synchronize">synchronize</el-checkbox>
+                  <el-checkbox value="reopened">reopened</el-checkbox>
+                </el-checkbox-group>
+              </el-form-item>
+              <el-form-item label="目标分支">
+                <el-select
+                  v-model="form.reviewConfig.trigger.targetBranches"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="例如 test、develop、release/*"
+                  style="width: 100%"
+                />
+              </el-form-item>
+              <el-form-item v-if="form.reviewConfig.trigger.branchMode === 'SOURCE_AND_TARGET'" label="源分支">
+                <el-select
+                  v-model="form.reviewConfig.trigger.sourceBranches"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="例如 dev、feature/*、bugfix/*"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="parser">
+            <template #label>
+              <span class="tab-label"><el-icon><Files /></el-icon>代码解析</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>代码解析策略</h3>
+                <p>用于多模块仓库的源码定位、关联类提取和上下文构建。</p>
+                <el-button size="small" @click="fillArgusExample">填入 Argus 示例</el-button>
+              </div>
+              <el-form-item label="基础包列表 JSON">
+                <el-input v-model.trim="form.basePackages" type="textarea" :rows="3" placeholder='["com.lnzz.argus"]' />
+              </el-form-item>
+              <el-form-item label="模块源码根 JSON">
+                <el-input v-model.trim="form.moduleSourceRoots" type="textarea" :rows="4" placeholder='["argus-server/src/main/java"]' />
+              </el-form-item>
+              <el-form-item label="包到模块映射 JSON">
+                <el-input
+                  v-model.trim="form.packageModuleMappings"
+                  type="textarea"
+                  :rows="6"
+                  placeholder='[{"packagePrefix":"com.demo.common","sourceRoot":"demo-common/src/main/java"}]'
+                />
+              </el-form-item>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="最大关联类数">
+                    <el-input-number v-model="form.maxRelatedClasses" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="最大上下文 Token">
+                    <el-input-number v-model="form.maxContextTokens" :min="1000" :step="1000" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="评审并发度">
+                    <el-input-number v-model="form.reviewParallelism" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="filter">
+            <template #label>
+              <span class="tab-label"><el-icon><DataAnalysis /></el-icon>过滤与评分</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>文件过滤与 Token 预算</h3>
+                <p>控制大文件、锁文件、二进制资源和上下文预算，减少无效 AI 消耗。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="单文件最大 diff 行数">
+                    <el-input-number v-model="form.reviewConfig.fileFilter.maxDiffLinesPerFile" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="最大总 diff 行数">
+                    <el-input-number v-model="form.reviewConfig.fileFilter.maxTotalDiffLines" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="最大评审文件数">
+                    <el-input-number v-model="form.reviewConfig.fileFilter.maxReviewFiles" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-form-item label="排除文件模式">
+                <el-select v-model="form.reviewConfig.fileFilter.excludeFilePatterns" multiple filterable allow-create default-first-option style="width: 100%" />
+              </el-form-item>
+              <el-form-item label="二进制扩展名">
+                <el-select v-model="form.reviewConfig.fileFilter.binaryExtensions" multiple filterable allow-create default-first-option style="width: 100%" />
+              </el-form-item>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                <h3>评分与异步策略</h3>
+                <p>控制最终分计算、阻止阈值、评分超时和进度评论。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="阻止阈值">
+                    <el-input-number v-model="form.reviewConfig.scoring.blockThreshold" :min="0" :max="100" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="AI 分权重">
+                    <el-input-number v-model="form.reviewConfig.scoring.aiWeight" :min="0" :max="1" :step="0.1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="规则分权重">
+                    <el-input-number v-model="form.reviewConfig.scoring.ruleWeight" :min="0" :max="1" :step="0.1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-alert v-if="scoreWeightWarning" type="warning" show-icon :closable="false" title="AI 分权重与规则分权重建议合计为 1" />
+              <el-row :gutter="16" class="dimension-row">
+                <el-col v-for="item in dimensionFields" :key="item.key" :span="8">
+                  <el-form-item :label="item.label">
+                    <el-input-number v-model="form.reviewConfig.scoring.dimensions[item.key]" :min="0" :max="100" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-alert v-if="dimensionWeightWarning" type="warning" show-icon :closable="false" title="五维度权重建议合计为 100" />
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="评分超时秒数">
+                    <el-input-number v-model="form.reviewConfig.async.scoreTimeoutSec" :min="10" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="线程池大小">
+                    <el-input-number v-model="form.reviewConfig.async.threadPoolSize" :min="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="进度评论">
+                    <el-switch v-model="form.reviewConfig.async.progressCommentEnabled" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="notify">
+            <template #label>
+              <span class="tab-label"><el-icon><Bell /></el-icon>通知</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>仓库级通知策略</h3>
+                <p>仓库级 Webhook 优先于全局默认 Webhook。编辑时留空表示保留原值。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="12">
+                  <el-form-item label="仓库级企微通知">
+                    <el-switch v-model="form.wechatNotifyEnabled" active-text="开启" inactive-text="关闭" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="评审通知开关">
+                    <el-switch v-model="form.reviewConfig.notification.wechatNotifyEnabled" active-text="开启" inactive-text="关闭" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-form-item label="自定义企微 Webhook">
+                <el-input
+                  v-model.trim="form.wechatNotifyWebhook"
+                  type="password"
+                  show-password
+                  placeholder="留空使用全局默认；编辑时留空表示保留原值"
+                />
+              </el-form-item>
+              <el-form-item label="低分告警阈值">
+                <el-input-number v-model="form.reviewConfig.notification.scoreAlertThreshold" :min="0" :max="100" controls-position="right" />
+              </el-form-item>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="json">
+            <template #label>
+              <span class="tab-label"><el-icon><Document /></el-icon>高级 JSON</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <h3>reviewConfig JSON</h3>
+                <p>用于高级配置和排障。启用编辑后，保存时将以这里的 JSON 为准。</p>
+                <el-switch v-model="advancedJsonEditing" active-text="编辑 JSON" inactive-text="只读预览" />
+              </div>
+              <el-input
+                v-model="advancedReviewConfigJson"
+                type="textarea"
+                :rows="18"
+                :readonly="!advancedJsonEditing"
+                spellcheck="false"
+                class="json-editor"
+              />
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-form>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="drawerVisible = false">取消</el-button>
+          <el-button type="primary" :loading="submitting" @click="handleSubmit">
+            {{ drawerMode === 'create' ? '创建配置' : '保存修改' }}
+          </el-button>
+        </div>
+      </template>
+    </el-drawer>
+
+    <el-drawer v-model="detailVisible" title="仓库配置详情" size="560px">
+      <template v-if="detailConfig">
+        <div class="detail-panel">
+          <h3>{{ detailConfig.projectName || composeRepoName(detailConfig) }}</h3>
+          <p>{{ detailConfig.description || '暂无备注' }}</p>
+          <dl>
+            <dt>平台</dt>
+            <dd>{{ providerLabel(detailConfig.scmProvider) }}</dd>
+            <dt>仓库</dt>
+            <dd>{{ composeRepoName(detailConfig) }}</dd>
+            <dt>Webhook</dt>
+            <dd>{{ webhookUrlFor(detailConfig.scmProvider) }}</dd>
+            <dt>触发规则</dt>
+            <dd>{{ triggerSummary(detailConfig) }}；{{ branchSummary(detailConfig) }}</dd>
+            <dt>评审策略</dt>
+            <dd>阈值 {{ scoreThreshold(detailConfig) }} 分，最大文件数 {{ maxReviewFiles(detailConfig) }}</dd>
+            <dt>通知</dt>
+            <dd>{{ isNotifyEnabled(detailConfig) ? '开启' : '关闭' }}</dd>
+          </dl>
+        </div>
+      </template>
+    </el-drawer>
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Bell,
+  Connection,
+  CopyDocument,
+  DataAnalysis,
+  Document,
+  Edit,
+  Files,
+  Key,
+  MoreFilled,
+  Plus,
+  Refresh,
+  Setting,
+  View,
+} from '@element-plus/icons-vue'
 import { createScmConfig, fetchScmConfigs, updateScmConfig } from '../api/scm'
 
-const providerPlaceholders = {
+const providerDefaults = {
   gitlab: {
+    label: 'GitLab',
     apiBaseUrl: 'https://gitlab.com/api/v4',
     webBaseUrl: 'https://gitlab.com',
   },
   github: {
+    label: 'GitHub',
     apiBaseUrl: 'https://api.github.com',
     webBaseUrl: 'https://github.com',
   },
   gitee: {
+    label: 'Gitee',
     apiBaseUrl: 'https://gitee.com/api/v5',
     webBaseUrl: 'https://gitee.com',
   },
 }
+
+const providerOptions = [
+  { label: 'GitLab', value: 'gitlab' },
+  { label: 'GitHub', value: 'github' },
+  { label: 'Gitee', value: 'gitee' },
+]
+
+const branchModeOptions = [
+  { label: '仅目标分支', value: 'TARGET_ONLY' },
+  { label: '源 + 目标', value: 'SOURCE_AND_TARGET' },
+]
+
+const dimensionFields = [
+  { key: 'compliance', label: '规范合规' },
+  { key: 'correctness', label: '逻辑正确' },
+  { key: 'dataIntegrity', label: '数据完整' },
+  { key: 'performance', label: '性能风险' },
+  { key: 'maintainability', label: '可维护性' },
+]
 
 const argusExample = {
   basePackages: '["com.lnzz.argus"]',
@@ -317,18 +608,145 @@ const configs = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const errorMessage = ref('')
-const successMessage = ref('')
+const drawerVisible = ref(false)
+const drawerMode = ref('create')
 const editingId = ref(null)
+const activeTab = ref('basic')
+const advancedJsonEditing = ref(false)
+const advancedReviewConfigJson = ref('')
+const detailVisible = ref(false)
+const detailConfig = ref(null)
+const formRef = ref()
+
+const filters = reactive({
+  provider: '',
+  enabled: '',
+  keyword: '',
+})
 
 const form = reactive(createEmptyForm())
 
-const isEditing = computed(() => editingId.value !== null)
 const enabledCount = computed(() => configs.value.filter((item) => item.enabled).length)
+const triggerConfiguredCount = computed(() => configs.value.filter((item) => hasTriggerConfig(item)).length)
+const notifyEnabledCount = computed(() => configs.value.filter((item) => isNotifyEnabled(item)).length)
+
+const filteredConfigs = computed(() => {
+  return configs.value.filter((item) => {
+    if (filters.provider && item.scmProvider !== filters.provider) return false
+    if (filters.enabled === 'enabled' && !item.enabled) return false
+    if (filters.enabled === 'disabled' && item.enabled) return false
+    if (!filters.keyword) return true
+    const keyword = filters.keyword.toLowerCase()
+    return [
+      item.projectName,
+      item.repoOwner,
+      item.repoName,
+      item.apiBaseUrl,
+      item.webBaseUrl,
+      item.description,
+    ].some((value) => String(value || '').toLowerCase().includes(keyword))
+  })
+})
+
+const webhookUrl = computed(() => webhookUrlFor(form.scmProvider))
+
+const scoreWeightWarning = computed(() => {
+  const scoring = form.reviewConfig.scoring
+  return Math.abs(Number(scoring.aiWeight || 0) + Number(scoring.ruleWeight || 0) - 1) > 0.001
+})
+
+const dimensionWeightWarning = computed(() => {
+  const dims = form.reviewConfig.scoring.dimensions
+  const total = Object.values(dims).reduce((sum, value) => sum + Number(value || 0), 0)
+  return total !== 100
+})
+
+watch(
+  () => form.reviewConfig,
+  () => {
+    if (!advancedJsonEditing.value) {
+      advancedReviewConfigJson.value = JSON.stringify(form.reviewConfig, null, 2)
+    }
+  },
+  { deep: true },
+)
+
+function defaultReviewConfig() {
+  return {
+    trigger: {
+      enabled: true,
+      eventTypes: ['opened', 'update', 'synchronize', 'reopened'],
+      branchMode: 'TARGET_ONLY',
+      targetBranches: ['test'],
+      sourceBranches: [],
+    },
+    vector: {
+      enabled: true,
+      reviewSearchTopk: 5,
+      errorSearchTopk: 5,
+      minSimilarity: 0.7,
+      knowledgeMinScore: 0.7,
+      embeddingTimeoutSec: 30,
+    },
+    profile: {
+      injectEnabled: false,
+      lookbackDays: 30,
+      clusterTopk: 10,
+      injectTopk: 3,
+      recentReviewCount: 5,
+      scoreTrendCount: 10,
+    },
+    fileFilter: {
+      maxDiffLinesPerFile: 500,
+      maxTotalDiffLines: 3000,
+      maxReviewFiles: 15,
+      excludeFilePatterns: ['**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml', '**/*.min.js', '**/*.min.css'],
+      binaryExtensions: ['.jar', '.war', '.png', '.jpg', '.gif', '.pdf', '.doc', '.docx', '.xlsx'],
+    },
+    token: {
+      maxContextTokens: 16000,
+      templateReserveTokens: 2000,
+      relatedClassTokens: 1000,
+      newFilePenalty: 0.8,
+      coreModuleBonus: 1.2,
+      minTokenPerFile: 800,
+    },
+    async: {
+      scoreTimeoutSec: 120,
+      aiTimeoutSec: 180,
+      threadPoolSize: 4,
+      progressCommentEnabled: true,
+      scoreRetryMax: 2,
+      scoreRetryDelayMs: 5000,
+    },
+    scoring: {
+      aiWeight: 0.6,
+      ruleWeight: 0.4,
+      criticalDeduction: 20,
+      majorDeduction: 10,
+      minorDeduction: 3,
+      suggestionDeduction: 0,
+      blockThreshold: 60,
+      dimensions: {
+        compliance: 25,
+        correctness: 25,
+        dataIntegrity: 20,
+        performance: 15,
+        maintainability: 15,
+      },
+    },
+    notification: {
+      scoreAlertThreshold: 60,
+      scoreAlertChannels: ['wechat'],
+      wechatNotifyEnabled: true,
+    },
+  }
+}
 
 function createEmptyForm() {
   return {
     scmProvider: 'gitlab',
-    projectId: '',
+    projectId: null,
     projectName: '',
     repoOwner: '',
     repoName: '',
@@ -344,24 +762,97 @@ function createEmptyForm() {
     reviewParallelism: 3,
     enabled: true,
     description: '',
+    wechatNotifyEnabled: true,
+    wechatNotifyWebhook: '',
+    reviewConfig: defaultReviewConfig(),
   }
 }
 
-function assignForm(values) {
-  Object.assign(form, createEmptyForm(), values)
+function resetForm() {
+  Object.assign(form, createEmptyForm())
+  advancedJsonEditing.value = false
+  advancedReviewConfigJson.value = JSON.stringify(form.reviewConfig, null, 2)
 }
 
-function composeRepoName(item) {
-  if (item.repoOwner && item.repoName) {
-    return `${item.repoOwner}/${item.repoName}`
+function openCreateDrawer() {
+  drawerMode.value = 'create'
+  editingId.value = null
+  activeTab.value = 'basic'
+  resetForm()
+  drawerVisible.value = true
+}
+
+function openEditDrawer(item) {
+  drawerMode.value = 'edit'
+  editingId.value = item.id
+  activeTab.value = 'basic'
+  assignFormFromConfig(item)
+  drawerVisible.value = true
+}
+
+function openDetailDrawer(item) {
+  detailConfig.value = item
+  detailVisible.value = true
+}
+
+function assignFormFromConfig(item) {
+  resetForm()
+  Object.assign(form, {
+    scmProvider: item.scmProvider || 'gitlab',
+    projectId: item.projectId ?? null,
+    projectName: item.projectName || '',
+    repoOwner: item.repoOwner || '',
+    repoName: item.repoName || '',
+    apiBaseUrl: item.apiBaseUrl || '',
+    webBaseUrl: item.webBaseUrl || '',
+    accessToken: '',
+    webhookSecret: '',
+    basePackages: item.basePackages || '',
+    moduleSourceRoots: item.moduleSourceRoots || '',
+    packageModuleMappings: item.packageModuleMappings || '',
+    maxRelatedClasses: item.maxRelatedClasses || 5,
+    maxContextTokens: item.maxContextTokens || 12000,
+    reviewParallelism: item.reviewParallelism || 3,
+    enabled: item.enabled !== false,
+    description: item.description || '',
+    wechatNotifyEnabled: item.wechatNotifyEnabled == null ? true : Number(item.wechatNotifyEnabled) === 1,
+    wechatNotifyWebhook: '',
+    reviewConfig: parseReviewConfig(item.reviewConfig),
+  })
+  advancedReviewConfigJson.value = JSON.stringify(form.reviewConfig, null, 2)
+}
+
+function parseReviewConfig(raw) {
+  const defaults = defaultReviewConfig()
+  if (!raw) return defaults
+  try {
+    return deepMerge(defaults, JSON.parse(raw))
+  } catch {
+    return defaults
   }
-  return item.repoName || item.repoOwner || '-'
+}
+
+function deepMerge(base, override) {
+  const result = Array.isArray(base) ? [...base] : { ...base }
+  if (!override || typeof override !== 'object') return result
+  Object.keys(override).forEach((key) => {
+    const nextValue = override[key]
+    if (Array.isArray(nextValue)) {
+      result[key] = [...nextValue]
+    } else if (nextValue && typeof nextValue === 'object' && !Array.isArray(result[key])) {
+      result[key] = deepMerge(result[key] || {}, nextValue)
+    } else if (nextValue !== null && nextValue !== undefined) {
+      result[key] = nextValue
+    }
+  })
+  return result
 }
 
 function normalizePayload() {
+  const reviewConfig = advancedJsonEditing.value ? parseAdvancedJson() : form.reviewConfig
   return {
     scmProvider: form.scmProvider,
-    projectId: form.projectId === '' ? null : Number(form.projectId),
+    projectId: form.projectId === '' ? null : form.projectId,
     projectName: form.projectName || null,
     repoOwner: form.repoOwner || null,
     repoName: form.repoName || null,
@@ -375,63 +866,62 @@ function normalizePayload() {
     maxRelatedClasses: normalizeNumber(form.maxRelatedClasses),
     maxContextTokens: normalizeNumber(form.maxContextTokens),
     reviewParallelism: normalizeNumber(form.reviewParallelism),
-    enabled: !!form.enabled,
+    enabled: Boolean(form.enabled),
     description: form.description || null,
+    wechatNotifyEnabled: form.wechatNotifyEnabled ? 1 : 0,
+    wechatNotifyWebhook: form.wechatNotifyWebhook || null,
+    reviewConfig: JSON.stringify(reviewConfig),
+  }
+}
+
+function parseAdvancedJson() {
+  try {
+    return JSON.parse(advancedReviewConfigJson.value)
+  } catch {
+    throw new Error('高级 JSON 不是合法 JSON，请检查格式')
   }
 }
 
 function normalizeNumber(value) {
-  if (value === '' || value === null || value === undefined) {
-    return null
-  }
+  if (value === '' || value === null || value === undefined) return null
   return Number(value)
 }
 
-function resetMessages() {
-  errorMessage.value = ''
-  successMessage.value = ''
+function validatePayload(payload) {
+  if (!payload.projectId && !(payload.repoOwner && payload.repoName)) {
+    throw new Error('请至少填写项目 ID，或同时填写仓库归属和仓库名称')
+  }
+  validateJsonField(payload.basePackages, '基础包列表')
+  validateJsonField(payload.moduleSourceRoots, '模块源码根列表')
+  validateJsonField(payload.packageModuleMappings, '包到模块映射')
+
+  const trigger = JSON.parse(payload.reviewConfig).trigger
+  if (trigger.branchMode === 'SOURCE_AND_TARGET' && (!trigger.sourceBranches || !trigger.sourceBranches.length)) {
+    throw new Error('分支模式为“源 + 目标”时，源分支不能为空')
+  }
 }
 
-function resetForm() {
-  editingId.value = null
-  assignForm(createEmptyForm())
-  resetMessages()
+function validateJsonField(value, label) {
+  if (!value) return
+  try {
+    JSON.parse(value)
+  } catch {
+    throw new Error(`${label} 不是合法 JSON，请检查格式`)
+  }
 }
 
-function fillArgusExample() {
-  assignForm({
-    ...form,
-    ...argusExample,
-  })
-}
-
-function editConfig(item) {
-  editingId.value = item.id
-  assignForm({
-    scmProvider: item.scmProvider,
-    projectId: item.projectId ?? '',
-    projectName: item.projectName ?? '',
-    repoOwner: item.repoOwner ?? '',
-    repoName: item.repoName ?? '',
-    apiBaseUrl: item.apiBaseUrl ?? '',
-    webBaseUrl: item.webBaseUrl ?? '',
-    accessToken: '',
-    webhookSecret: '',
-    basePackages: item.basePackages ?? '',
-    moduleSourceRoots: item.moduleSourceRoots ?? '',
-    packageModuleMappings: item.packageModuleMappings ?? '',
-    maxRelatedClasses: item.maxRelatedClasses ?? 5,
-    maxContextTokens: item.maxContextTokens ?? 12000,
-    reviewParallelism: item.reviewParallelism ?? 3,
-    enabled: item.enabled,
-    description: item.description ?? '',
-  })
-  resetMessages()
+function hasTriggerConfig(item) {
+  if (!item?.reviewConfig) return false
+  try {
+    return Boolean(JSON.parse(item.reviewConfig).trigger)
+  } catch {
+    return false
+  }
 }
 
 async function loadConfigs() {
   loading.value = true
-  resetMessages()
+  errorMessage.value = ''
   try {
     configs.value = await fetchScmConfigs()
   } catch (error) {
@@ -443,92 +933,336 @@ async function loadConfigs() {
 
 async function handleSubmit() {
   submitting.value = true
-  resetMessages()
-
   try {
     const payload = normalizePayload()
-    if (!payload.projectId && !(payload.repoOwner && payload.repoName)) {
-      throw new Error('请至少填写仓库/项目 ID，或同时填写仓库归属和仓库名称')
-    }
-    validateJsonField(payload.basePackages, '基础包列表')
-    validateJsonField(payload.moduleSourceRoots, '模块源码根列表')
-    validateJsonField(payload.packageModuleMappings, '包到模块映射')
-
-    if (editingId.value) {
+    validatePayload(payload)
+    if (drawerMode.value === 'edit') {
       await updateScmConfig(editingId.value, payload)
-      successMessage.value = '仓库配置已更新'
+      ElMessage.success('仓库配置已更新')
     } else {
       await createScmConfig(payload)
-      successMessage.value = '仓库配置已创建'
+      ElMessage.success('仓库配置已创建')
     }
-
+    drawerVisible.value = false
     await loadConfigs()
-    resetForm()
   } catch (error) {
-    errorMessage.value = error.message || '保存 SCM 配置失败'
+    ElMessage.error(error.message || '保存 SCM 配置失败')
   } finally {
     submitting.value = false
   }
 }
 
-onMounted(() => {
-  loadConfigs()
-})
-
-function validateJsonField(value, label) {
-  if (!value) {
-    return
-  }
+async function toggleEnabled(row) {
+  const nextEnabled = !row.enabled
   try {
-    JSON.parse(value)
+    await ElMessageBox.confirm(
+      `确认${nextEnabled ? '启用' : '停用'}仓库 ${row.projectName || composeRepoName(row)} 吗？`,
+      '状态变更确认',
+      { type: 'warning' },
+    )
+    const payload = {
+      ...row,
+      enabled: nextEnabled,
+      accessToken: null,
+      webhookSecret: null,
+      wechatNotifyWebhook: null,
+    }
+    await updateScmConfig(row.id, payload)
+    ElMessage.success('状态已更新')
+    await loadConfigs()
   } catch (error) {
-    throw new Error(`${label} 不是合法 JSON，请检查格式`)
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.message || '状态更新失败')
+    }
   }
 }
+
+function fillArgusExample() {
+  Object.assign(form, argusExample)
+}
+
+function composeRepoName(item) {
+  if (item.repoOwner && item.repoName) return `${item.repoOwner}/${item.repoName}`
+  return item.repoName || item.repoOwner || '-'
+}
+
+function providerLabel(provider) {
+  return providerDefaults[provider]?.label || provider || '-'
+}
+
+function providerTagType(provider) {
+  if (provider === 'gitlab') return 'warning'
+  if (provider === 'github') return 'info'
+  if (provider === 'gitee') return 'danger'
+  return ''
+}
+
+function triggerSummary(row) {
+  const trigger = parseReviewConfig(row.reviewConfig).trigger
+  if (!trigger.enabled) return '触发关闭'
+  return trigger.branchMode === 'SOURCE_AND_TARGET' ? '源 + 目标分支' : '仅目标分支'
+}
+
+function branchSummary(row) {
+  const trigger = parseReviewConfig(row.reviewConfig).trigger
+  const target = trigger.targetBranches?.join(', ') || '-'
+  const source = trigger.branchMode === 'SOURCE_AND_TARGET' ? `；源 ${trigger.sourceBranches?.join(', ') || '-'}` : ''
+  return `目标 ${target}${source}`
+}
+
+function scoreThreshold(row) {
+  return parseReviewConfig(row.reviewConfig).scoring.blockThreshold
+}
+
+function maxReviewFiles(row) {
+  return parseReviewConfig(row.reviewConfig).fileFilter.maxReviewFiles
+}
+
+function isNotifyEnabled(row) {
+  return row.wechatNotifyEnabled == null || Number(row.wechatNotifyEnabled) === 1
+}
+
+function webhookUrlFor(provider) {
+  return `${window.location.origin}/api/v1/webhook/${provider || 'gitlab'}`
+}
+
+function copyWebhook(row) {
+  copyText(webhookUrlFor(row.scmProvider))
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
+onMounted(async () => {
+  resetForm()
+  await nextTick()
+  loadConfigs()
+})
 </script>
 
 <style scoped>
-.subsection {
-  margin-top: 28px;
-  padding-top: 24px;
-  border-top: 1px solid rgba(197, 211, 232, 0.8);
+.scm-page {
+  gap: 18px;
 }
 
-.subsection-header {
+.scm-titlebar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 18px;
+  padding: 4px 0 2px;
 }
 
-.subsection-header h3 {
-  margin: 0 0 6px;
-  font-size: 18px;
-}
-
-.subsection-header p {
+.scm-titlebar h2 {
   margin: 0;
-  color: #6b778c;
-  line-height: 1.6;
+  font-size: 28px;
+  line-height: 1.15;
 }
 
-.hint-card {
-  height: 100%;
-  padding: 14px 16px;
-  border: 1px dashed #c5d3e8;
+.scm-titlebar p:last-child {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.title-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.scm-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.scm-stat {
+  padding: 18px;
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #f8fbff;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 
-.hint-card strong {
+.scm-stat span,
+.scm-stat small {
   display: block;
-  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
-.hint-card p {
+.scm-stat strong {
+  display: block;
+  margin: 8px 0 6px;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.scm-workbench {
+  padding: 18px;
+}
+
+.scm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.toolbar-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.toolbar-summary {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toolbar-summary strong {
+  color: var(--text);
+}
+
+.scm-alert {
+  margin-bottom: 14px;
+}
+
+.scm-table {
+  width: 100%;
+}
+
+.repo-cell {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.repo-cell strong,
+.table-main {
+  display: block;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.repo-cell span,
+.table-sub {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.ellipsis-text {
+  display: block;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scm-form {
+  min-height: 100%;
+}
+
+.form-section {
+  margin-bottom: 22px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.section-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.section-title h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.section-title p {
   margin: 0;
-  color: #6b778c;
+  color: var(--muted);
   line-height: 1.6;
+}
+
+.dimension-row {
+  margin-top: 12px;
+}
+
+.json-editor :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.detail-panel h3 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.detail-panel p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.detail-panel dl {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  margin: 0;
+}
+
+.detail-panel dt {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.detail-panel dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .scm-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scm-titlebar,
+  .scm-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>

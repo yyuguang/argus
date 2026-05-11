@@ -1,113 +1,70 @@
 package com.lnzz.argus.scm.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.lnzz.argus.common.exception.BizException;
-import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.scm.entity.ScmConfig;
-import com.lnzz.argus.scm.mapper.ScmConfigMapper;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 
 import java.util.List;
 
 /**
- * SCM 配置服务
+ * SCM 平台配置服务接口
+ * <p>管理 GitLab / GitHub / Gitee 等代码托管平台的连接配置</p>
  *
  * @author lnzz
  * @since 1.0.0
  */
-@Service
-@RequiredArgsConstructor
-public class ScmConfigService {
+public interface ScmConfigService {
 
-    private final ScmConfigMapper scmConfigMapper;
+    /**
+     * 查询所有 SCM 配置
+     *
+     * @return 配置列表，按更新时间倒序
+     */
+    List<ScmConfig> listAll();
 
-    public List<ScmConfig> listAll() {
-        return scmConfigMapper.selectList(new LambdaQueryWrapper<ScmConfig>()
-                .orderByDesc(ScmConfig::getUpdateTime));
-    }
+    /**
+     * 按主键查询
+     *
+     * @param id 配置ID
+     * @return 配置实体，不存在返回 null
+     */
+    ScmConfig getById(Long id);
 
-    public ScmConfig getById(Long id) {
-        return scmConfigMapper.selectById(id);
-    }
+    /**
+     * 按主键查询，不存在则抛异常
+     *
+     * @param id 配置ID
+     * @return 配置实体
+     * @throws com.lnzz.argus.common.exception.BizException 配置不存在时抛出 NOT_FOUND
+     */
+    ScmConfig requireById(Long id);
 
-    public ScmConfig requireById(Long id) {
-        ScmConfig config = getById(id);
-        if (config == null) {
-            throw new BizException(ResultCode.NOT_FOUND, "SCM 配置不存在: " + id);
-        }
-        return config;
-    }
+    /**
+     * 按平台和仓库信息匹配配置
+     * <p>优先按 projectId 精确匹配，其次按 repoOwner + repoName 匹配，仅返回已启用的配置</p>
+     *
+     * @param provider  SCM 平台（gitlab / github / gitee）
+     * @param projectId 项目ID（可选）
+     * @param repoOwner 仓库所有者（可选，与 repoName 配合使用）
+     * @param repoName  仓库名（可选，与 repoOwner 配合使用）
+     * @return 匹配的配置，未匹配返回 null
+     */
+    ScmConfig resolveConfig(String provider, Long projectId, String repoOwner, String repoName);
 
-    public ScmConfig resolveConfig(String provider, Long projectId, String repoOwner, String repoName) {
-        LambdaQueryWrapper<ScmConfig> wrapper = new LambdaQueryWrapper<ScmConfig>()
-                .eq(ScmConfig::getScmProvider, provider)
-                .eq(ScmConfig::getEnabled, true)
-                .last("limit 1");
+    /**
+     * 新增或更新配置
+     * <p>新增时 id 为 null，直接插入。更新时如未提供 token/secret 则保留原有值不覆盖</p>
+     * <p>自动规范化：scmProvider 转小写、enabled 默认 true、maxRelatedClasses 默认 5、maxContextTokens 默认 16000</p>
+     *
+     * @param config 配置实体
+     * @return 保存后的完整配置
+     */
+    ScmConfig saveOrUpdate(ScmConfig config);
 
-        if (projectId != null) {
-            wrapper.eq(ScmConfig::getProjectId, projectId);
-        } else if (StringUtils.hasText(repoOwner) && StringUtils.hasText(repoName)) {
-            wrapper.eq(ScmConfig::getRepoOwner, repoOwner)
-                    .eq(ScmConfig::getRepoName, repoName);
-        } else {
-            return null;
-        }
-
-        return scmConfigMapper.selectOne(wrapper);
-    }
-
-    public ScmConfig saveOrUpdate(ScmConfig config) {
-        normalize(config);
-
-        if (config.getId() == null) {
-            scmConfigMapper.insert(config);
-            return config;
-        }
-
-        ScmConfig existing = requireById(config.getId());
-        if (!StringUtils.hasText(config.getAccessToken())) {
-            config.setAccessToken(existing.getAccessToken());
-        }
-        if (!StringUtils.hasText(config.getWebhookSecret())) {
-            config.setWebhookSecret(existing.getWebhookSecret());
-        }
-        scmConfigMapper.updateById(config);
-        return scmConfigMapper.selectById(config.getId());
-    }
-
-    private void normalize(ScmConfig config) {
-        if (config.getScmProvider() != null) {
-            config.setScmProvider(config.getScmProvider().trim().toLowerCase());
-        }
-        if (config.getEnabled() == null) {
-            config.setEnabled(Boolean.TRUE);
-        }
-        if (config.getRepoOwner() != null) {
-            config.setRepoOwner(config.getRepoOwner().trim());
-        }
-        if (config.getRepoName() != null) {
-            config.setRepoName(config.getRepoName().trim());
-        }
-        if (config.getMaxRelatedClasses() == null || config.getMaxRelatedClasses() <= 0) {
-            config.setMaxRelatedClasses(5);
-        }
-        if (config.getMaxContextTokens() == null || config.getMaxContextTokens() <= 0) {
-            config.setMaxContextTokens(16000);
-        }
-        if (config.getReviewParallelism() == null || config.getReviewParallelism() <= 0) {
-            config.setReviewParallelism(3);
-        }
-    }
-
-    public String maskSecret(String secret) {
-        if (!StringUtils.hasText(secret)) {
-            return "";
-        }
-        if (secret.length() <= 8) {
-            return "********";
-        }
-        return secret.substring(0, 4) + "********" + secret.substring(secret.length() - 4);
-    }
+    /**
+     * 脱敏 secret/token 用于前端展示
+     * <p>长度 ≤ 8 时全部替换为星号，否则保留前后各 4 位</p>
+     *
+     * @param secret 原始密钥
+     * @return 脱敏后的字符串
+     */
+    String maskSecret(String secret);
 }
