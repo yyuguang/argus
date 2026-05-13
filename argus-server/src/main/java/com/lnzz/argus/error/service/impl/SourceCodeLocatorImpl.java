@@ -1,14 +1,15 @@
 package com.lnzz.argus.error.service.impl;
 
 import com.alibaba.fastjson2.JSON;
-import com.lnzz.argus.error.service.SourceCodeLocator;
-import com.lnzz.argus.scm.service.ScmPlatformService;
 import com.alibaba.fastjson2.JSONArray;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.lnzz.argus.config.ErrorProcessingProperties;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
-import com.lnzz.argus.error.parse.SourceType;
+import com.lnzz.argus.common.enums.SourceType;
+import com.lnzz.argus.error.service.SourceCodeLocator;
+import com.lnzz.argus.error.service.SourceFileCacheService;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.mapper.ScmConfigMapper;
 import com.lnzz.argus.scm.service.ScmPlatformService;
@@ -34,6 +35,8 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
     private final ProjectMappingMapper projectMappingMapper;
     private final ScmConfigMapper scmConfigMapper;
     private final ScmPlatformServiceFactory scmFactory;
+    private final SourceFileCacheService sourceFileCacheService;
+    private final ErrorProcessingProperties errorProcessingProperties;
 
     // ======================== M5-A01: 项目映射查询 ========================
 
@@ -79,13 +82,13 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         String primaryPath = buildFilePath(event.getFilePath(), event.getClassName(),
                 sourceRoot, mapping.getBasePackage());
 
-        String content = scmService.getFileContent(scmConfig, primaryPath, ref);
+        String content = fetchSourceFile(scmService, scmConfig, primaryPath, ref);
 
         if (content == null) {
             String fallbackPath = tryCandidateFiles(scmService, scmConfig, event, mapping,
                     sourceRoot, ref);
             if (fallbackPath != null) {
-                content = scmService.getFileContent(scmConfig, fallbackPath, ref);
+                content = fetchSourceFile(scmService, scmConfig, fallbackPath, ref);
                 primaryPath = fallbackPath;
             }
         }
@@ -99,7 +102,8 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         if (content != null) {
             log.info("源码定位成功: appName={}, filePath={}, contentLength={}",
                     event.getAppName(), primaryPath, content.length());
-            return new SourceLocation(primaryPath, content, contextFiles, mapping, true, null);
+            return new SourceLocation(primaryPath, limitPromptContent(content,
+                    errorProcessingProperties.getSource().getMaxPromptSourceChars()), contextFiles, mapping, true, null);
         }
 
         if (SourceType.NGINX.getCode().equals(event.getSourceType())) {
@@ -207,7 +211,7 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         }
 
         for (String candidate : candidates) {
-            String content = scmService.getFileContent(scmConfig, candidate, ref);
+            String content = fetchSourceFile(scmService, scmConfig, candidate, ref);
             if (content != null) {
                 log.info("候选文件匹配成功: candidate={}", candidate);
                 return candidate;
@@ -227,16 +231,25 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         String basePackage = mapping.getBasePackage();
         if (basePackage == null) return context;
 
-        int maxRelated = scmConfig.getMaxRelatedClasses() != null ? scmConfig.getMaxRelatedClasses() : 3;
+        int maxRelated = scmConfig.getMaxRelatedClasses() != null
+                ? scmConfig.getMaxRelatedClasses()
+                : errorProcessingProperties.getSource().getMaxRelatedFiles();
+        maxRelated = Math.min(maxRelated, Math.max(0, errorProcessingProperties.getSource().getMaxRelatedFiles()));
+        int remainingBudget = errorProcessingProperties.getSource().getMaxPromptSourceChars();
 
         String className = event.getClassName();
         if (className != null && basePackage != null) {
             List<String> relatedPaths = inferRelatedClasses(className, basePackage, sourceRoot, maxRelated);
             for (String path : relatedPaths) {
                 try {
-                    String fileContent = scmService.getFileContent(scmConfig, path, ref);
+                    if (context.size() >= maxRelated || remainingBudget <= 0) {
+                        break;
+                    }
+                    String fileContent = fetchSourceFile(scmService, scmConfig, path, ref);
                     if (fileContent != null) {
-                        context.put(path, fileContent);
+                        String limited = limitPromptContent(fileContent, remainingBudget);
+                        context.put(path, limited);
+                        remainingBudget -= limited.length();
                     }
                 } catch (Exception e) {
                     log.debug("上下文文件获取失败: path={}", path);
@@ -336,10 +349,11 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         }
 
         for (String path : fallbackPaths) {
-            String content = scmService.getFileContent(scmConfig, path, ref);
+            String content = fetchSourceFile(scmService, scmConfig, path, ref);
             if (content != null) {
                 log.info("Nginx 降级成功: path={}", path);
-                return new SourceLocation(path, content, Map.of(), mapping, true, "Nginx降级");
+                return new SourceLocation(path, limitPromptContent(content,
+                        errorProcessingProperties.getSource().getMaxPromptSourceChars()), Map.of(), mapping, true, "Nginx降级");
             }
         }
 
@@ -360,5 +374,26 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
 
     private String defaultRef(ProjectMapping mapping, ScmConfig scmConfig) {
         return mapping.getDefaultBranch() != null ? mapping.getDefaultBranch() : "master";
+    }
+
+    private String fetchSourceFile(ScmPlatformService scmService, ScmConfig scmConfig, String filePath, String ref) {
+        if (filePath == null || filePath.isBlank()) {
+            return null;
+        }
+        try {
+            return sourceFileCacheService.getOrLoad(scmConfig, ref, filePath,
+                    () -> scmService.getFileContent(scmConfig, filePath, ref));
+        } catch (Exception e) {
+            log.warn("SCM 源码文件拉取失败，降级继续: provider={}, projectId={}, ref={}, filePath={}, message={}",
+                    scmConfig.getScmProvider(), scmConfig.getProjectId(), ref, filePath, e.getMessage());
+            return null;
+        }
+    }
+
+    private String limitPromptContent(String content, int maxChars) {
+        if (content == null || maxChars <= 0 || content.length() <= maxChars) {
+            return content;
+        }
+        return content.substring(0, maxChars);
     }
 }

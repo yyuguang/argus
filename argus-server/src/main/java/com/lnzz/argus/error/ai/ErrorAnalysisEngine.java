@@ -2,11 +2,12 @@ package com.lnzz.argus.error.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lnzz.argus.common.enums.AnalysisSource;
+import com.lnzz.argus.common.enums.SeverityLevel;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
-import com.lnzz.argus.error.parse.SeverityLevel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;

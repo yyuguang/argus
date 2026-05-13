@@ -100,4 +100,41 @@ class FingerprintGeneratorTest {
         assertEquals(fp1, fp2);
     }
 
+    @Test
+    @DisplayName("应用日志指纹按环境隔离")
+    void applicationFingerprintSeparatedByEnvironment() {
+        String prod = generator.generateApplication("order-service", "PROD", "NULL_POINTER",
+                "com.example.OrderService", "create", 42, "NullPointerException",
+                "orderId=123456 创建订单失败");
+        String test = generator.generateApplication("order-service", "TEST", "NULL_POINTER",
+                "com.example.OrderService", "create", 42, "NullPointerException",
+                "orderId=123456 创建订单失败");
+
+        assertNotEquals(prod, test);
+    }
+
+    @Test
+    @DisplayName("应用日志指纹归一化动态数字")
+    void applicationFingerprintNormalizesDynamicNumbers() {
+        String fp1 = generator.generateApplication("order-service", "PROD", "NULL_POINTER",
+                "com.example.OrderService", "create", 42, "NullPointerException",
+                "orderId=123456 创建订单失败");
+        String fp2 = generator.generateApplication("order-service", "PROD", "NULL_POINTER",
+                "com.example.OrderService", "create", 42, "NullPointerException",
+                "orderId=987654 创建订单失败");
+
+        assertEquals(fp1, fp2);
+    }
+
+    @Test
+    @DisplayName("Nginx 指纹归一化 URI ID 和 query string")
+    void nginxFingerprintNormalizesUriIdAndQueryString() {
+        String fp1 = generator.generateNginx("order-service", "PROD", "NGINX_502",
+                "/api/orders/123456?traceId=abc", 502, 502, "order-service:8080");
+        String fp2 = generator.generateNginx("order-service", "PROD", "NGINX_502",
+                "/api/orders/987654?traceId=xyz", 502, 502, "order-service:8080");
+
+        assertEquals(fp1, fp2);
+    }
+
 }

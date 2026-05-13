@@ -2,8 +2,8 @@ package com.lnzz.argus.notification.service;
 
 import com.lnzz.argus.config.NotificationProperties;
 import com.lnzz.argus.error.entity.ErrorEvent;
-import com.lnzz.argus.error.parse.SeverityLevel;
-import com.lnzz.argus.error.parse.SourceType;
+import com.lnzz.argus.common.enums.SeverityLevel;
+import com.lnzz.argus.common.enums.SourceType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

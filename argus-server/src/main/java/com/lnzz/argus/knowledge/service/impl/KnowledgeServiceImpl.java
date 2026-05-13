@@ -6,9 +6,9 @@ import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.knowledge.entity.KnowledgeAudit;
-import com.lnzz.argus.knowledge.entity.KnowledgeAuditAction;
+import com.lnzz.argus.common.enums.KnowledgeAuditAction;
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
-import com.lnzz.argus.knowledge.entity.KnowledgeEntryStatus;
+import com.lnzz.argus.common.enums.KnowledgeEntryStatus;
 import com.lnzz.argus.knowledge.mapper.KnowledgeAuditMapper;
 import com.lnzz.argus.knowledge.mapper.KnowledgeEntryMapper;
 import com.lnzz.argus.knowledge.service.KnowledgeMatcher;
@@ -43,18 +43,26 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeEntry generateDraft(ErrorEvent event, ErrorAnalysis analysis) {
-        // 同名指纹已有已确认/白名单条目时跳过
+        // 同指纹已有草稿/确认/白名单条目时，回写发生次数，避免同一故障模式无限生成草稿。
         String fingerprint = event.getErrorFingerprint();
         if (fingerprint != null && !fingerprint.isEmpty()) {
-            Long existingCount = entryMapper.selectCount(
-                    new LambdaQueryWrapper<KnowledgeEntry>()
-                            .eq(KnowledgeEntry::getErrorFingerprint, fingerprint)
-                            .in(KnowledgeEntry::getStatus,
-                                    KnowledgeEntryStatus.CONFIRMED.getCode(),
-                                    KnowledgeEntryStatus.WHITELIST.getCode()));
-            if (existingCount > 0) {
-                log.debug("同指纹已有确认条目，跳过草稿: fingerprint={}", fingerprint.substring(0, 16));
-                return null;
+            KnowledgeEntry reusable = entryMapper.findReusableByFingerprint(fingerprint);
+            if (reusable != null) {
+                aggregateKnowledgeOccurrence(reusable, event, analysis);
+                log.debug("同指纹知识条目已复用并更新发生次数: entryId={}, fingerprint={}",
+                        reusable.getId(), fingerprint.substring(0, Math.min(16, fingerprint.length())));
+                return reusable;
+            }
+        }
+
+        // 同应用同类型草稿作为相似故障模式候选合并，避免近似问题不断生成新草稿。
+        if (event.getErrorType() != null && event.getAppName() != null) {
+            KnowledgeEntry similarDraft = entryMapper.findDraftByErrorTypeAndApp(event.getErrorType(), event.getAppName());
+            if (similarDraft != null) {
+                aggregateKnowledgeOccurrence(similarDraft, event, analysis);
+                log.debug("同应用同类型知识草稿已合并: entryId={}, appName={}, errorType={}",
+                        similarDraft.getId(), event.getAppName(), event.getErrorType());
+                return similarDraft;
             }
         }
 
@@ -64,15 +72,17 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         entry.setAppName(event.getAppName());
         entry.setTitle(buildTitle(event));
         entry.setErrorPattern(buildErrorPattern(event));
-        entry.setRootCause(analysis.getRootCause() != null ? analysis.getRootCause() : "待AI分析补充");
-        entry.setFixSuggestion(analysis.getFixDescription());
-        entry.setPreventionAdvice(analysis.getPreventionAdvice());
+        entry.setRootCause(analysis != null && analysis.getRootCause() != null
+                ? analysis.getRootCause() : "待AI分析补充");
+        entry.setFixSuggestion(analysis != null ? analysis.getFixDescription() : null);
+        entry.setPreventionAdvice(analysis != null ? analysis.getPreventionAdvice() : null);
         entry.setSourceEventId(event.getId());
-        entry.setSourceAnalysisId(analysis.getId());
+        entry.setSourceAnalysisId(analysis != null ? analysis.getId() : null);
         entry.setStatus(KnowledgeEntryStatus.DRAFT.getCode());
         entry.setSource("AUTO");
         entry.setOccurrenceCount(event.getOccurrenceCount() != null ? event.getOccurrenceCount() : 1);
         entry.setLastOccurredAt(event.getLastOccurredAt() != null ? event.getLastOccurredAt() : event.getOccurredAt());
+        entry.setTagsJson(buildTags(event, analysis));
 
         entryMapper.insert(entry);
         vectorKnowledgeService.storeKnowledgeEntry(entry);
@@ -108,6 +118,48 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             sb.append("\n");
         }
         return sb.toString();
+    }
+
+    private void aggregateKnowledgeOccurrence(KnowledgeEntry entry, ErrorEvent event, ErrorAnalysis analysis) {
+        int delta = event.getOccurrenceCount() != null && event.getOccurrenceCount() > 0
+                ? event.getOccurrenceCount()
+                : 1;
+        LocalDateTime lastOccurredAt = event.getLastOccurredAt() != null
+                ? event.getLastOccurredAt()
+                : event.getOccurredAt();
+        entryMapper.aggregateKnowledgeOccurrence(entry.getId(), delta, lastOccurredAt,
+                event.getId(), analysis != null ? analysis.getId() : null);
+        entry.setOccurrenceCount((entry.getOccurrenceCount() == null ? 0 : entry.getOccurrenceCount()) + delta);
+        if (entry.getLastOccurredAt() == null
+                || (lastOccurredAt != null && lastOccurredAt.isAfter(entry.getLastOccurredAt()))) {
+            entry.setLastOccurredAt(lastOccurredAt);
+        }
+    }
+
+    private String buildTags(ErrorEvent event, ErrorAnalysis analysis) {
+        StringBuilder sb = new StringBuilder("[");
+        appendTag(sb, "sourceEventId:" + event.getId());
+        if (analysis != null) {
+            appendTag(sb, "sourceAnalysisId:" + analysis.getId());
+            if (analysis.getConfidence() != null) {
+                appendTag(sb, "confidence:" + analysis.getConfidence());
+            }
+        }
+        if (event.getSeverity() != null) {
+            appendTag(sb, "severity:" + event.getSeverity());
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private void appendTag(StringBuilder sb, String value) {
+        if (value == null || value.endsWith(":null")) {
+            return;
+        }
+        if (sb.length() > 1) {
+            sb.append(",");
+        }
+        sb.append("\"").append(value.replace("\"", "\\\"")).append("\"");
     }
 
     // ======================== M8-A02: 相似检索 ========================
@@ -230,6 +282,30 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                                 KnowledgeEntryStatus.CONFIRMED.getCode(),
                                 KnowledgeEntryStatus.WHITELIST.getCode())
                         .orderByDesc(KnowledgeEntry::getOccurrenceCount));
+    }
+
+    @Override
+    public List<KnowledgeEntry> listEntries(String status, String errorType, String appName) {
+        LambdaQueryWrapper<KnowledgeEntry> wrapper = new LambdaQueryWrapper<KnowledgeEntry>()
+                .orderByDesc(KnowledgeEntry::getOccurrenceCount)
+                .orderByDesc(KnowledgeEntry::getLastOccurredAt);
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(KnowledgeEntry::getStatus, status);
+        }
+        if (errorType != null && !errorType.isBlank()) {
+            wrapper.eq(KnowledgeEntry::getErrorType, errorType);
+        }
+        if (appName != null && !appName.isBlank()) {
+            wrapper.eq(KnowledgeEntry::getAppName, appName);
+        }
+        if ((status == null || status.isBlank())
+                && (errorType == null || errorType.isBlank())
+                && (appName == null || appName.isBlank())) {
+            wrapper.in(KnowledgeEntry::getStatus,
+                    KnowledgeEntryStatus.CONFIRMED.getCode(),
+                    KnowledgeEntryStatus.WHITELIST.getCode());
+        }
+        return entryMapper.selectList(wrapper);
     }
 
     // ======================== M8-A04: 操作留痕 ========================

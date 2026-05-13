@@ -2,7 +2,7 @@ package com.lnzz.argus.notification.service;
 
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
-import com.lnzz.argus.error.parse.SeverityLevel;
+import com.lnzz.argus.common.enums.SeverityLevel;
 import org.springframework.stereotype.Component;
 
 import java.time.format.DateTimeFormatter;

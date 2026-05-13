@@ -4,9 +4,9 @@ import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.knowledge.entity.KnowledgeAudit;
-import com.lnzz.argus.knowledge.entity.KnowledgeAuditAction;
+import com.lnzz.argus.common.enums.KnowledgeAuditAction;
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
-import com.lnzz.argus.knowledge.entity.KnowledgeEntryStatus;
+import com.lnzz.argus.common.enums.KnowledgeEntryStatus;
 import com.lnzz.argus.knowledge.mapper.KnowledgeAuditMapper;
 import com.lnzz.argus.knowledge.mapper.KnowledgeEntryMapper;
 import com.lnzz.argus.knowledge.service.impl.KnowledgeServiceImpl;
@@ -22,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -64,6 +65,62 @@ class KnowledgeServiceTest {
         assertNotNull(entry);
         verify(entryMapper).insert(any(KnowledgeEntry.class));
         verify(vectorKnowledgeService).storeKnowledgeEntry(any(KnowledgeEntry.class));
+    }
+
+    @Test
+    @DisplayName("generateDraft 同指纹已有知识时回写次数，不重复生成草稿")
+    void generateDraftAggregatesReusableFingerprint() {
+        ErrorEvent event = new ErrorEvent();
+        event.setId(11L);
+        event.setAppName("order-service");
+        event.setErrorType("NULL_POINTER");
+        event.setErrorFingerprint("fp-001");
+        event.setOccurrenceCount(3);
+        KnowledgeEntry existing = new KnowledgeEntry();
+        existing.setId(100L);
+        existing.setStatus(KnowledgeEntryStatus.CONFIRMED.getCode());
+        existing.setOccurrenceCount(7);
+        when(entryMapper.findReusableByFingerprint("fp-001")).thenReturn(existing);
+
+        KnowledgeEntry result = service.generateDraft(event, new ErrorAnalysis());
+
+        assertEquals(100L, result.getId());
+        assertEquals(10, result.getOccurrenceCount());
+        verify(entryMapper).aggregateKnowledgeOccurrence(
+                org.mockito.ArgumentMatchers.eq(100L),
+                org.mockito.ArgumentMatchers.eq(3),
+                any(),
+                org.mockito.ArgumentMatchers.eq(11L),
+                any());
+        verify(entryMapper, never()).insert(any(KnowledgeEntry.class));
+        verify(vectorKnowledgeService, never()).storeKnowledgeEntry(any(KnowledgeEntry.class));
+    }
+
+    @Test
+    @DisplayName("generateDraft 同应用同类型草稿存在时合并为候选")
+    void generateDraftMergesSimilarDraftByTypeAndApp() {
+        ErrorEvent event = new ErrorEvent();
+        event.setId(12L);
+        event.setAppName("order-service");
+        event.setErrorType("TIMEOUT");
+        event.setOccurrenceCount(1);
+        KnowledgeEntry draft = new KnowledgeEntry();
+        draft.setId(101L);
+        draft.setStatus(KnowledgeEntryStatus.DRAFT.getCode());
+        draft.setOccurrenceCount(2);
+        when(entryMapper.findDraftByErrorTypeAndApp("TIMEOUT", "order-service")).thenReturn(draft);
+
+        KnowledgeEntry result = service.generateDraft(event, new ErrorAnalysis());
+
+        assertEquals(101L, result.getId());
+        assertEquals(3, result.getOccurrenceCount());
+        verify(entryMapper).aggregateKnowledgeOccurrence(
+                org.mockito.ArgumentMatchers.eq(101L),
+                org.mockito.ArgumentMatchers.eq(1),
+                any(),
+                org.mockito.ArgumentMatchers.eq(12L),
+                any());
+        verify(entryMapper, never()).insert(any(KnowledgeEntry.class));
     }
 
     // ======================== DRAFT → CONFIRMED ========================

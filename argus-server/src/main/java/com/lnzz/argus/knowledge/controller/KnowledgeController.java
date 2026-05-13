@@ -3,14 +3,14 @@ package com.lnzz.argus.knowledge.controller;
 import com.lnzz.argus.common.result.Result;
 import com.lnzz.argus.knowledge.entity.KnowledgeAudit;
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
-import com.lnzz.argus.knowledge.entity.KnowledgeEntryStatus;
+import com.lnzz.argus.knowledge.model.ErrorFingerprintSummary;
+import com.lnzz.argus.knowledge.service.ErrorKnowledgeSummaryService;
 import com.lnzz.argus.knowledge.service.KnowledgeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 知识库管理 Controller（M8）
@@ -26,6 +26,7 @@ import java.util.Map;
 public class KnowledgeController {
 
     private final KnowledgeService knowledgeService;
+    private final ErrorKnowledgeSummaryService summaryService;
 
     // ======================== 查询 ========================
 
@@ -35,14 +36,9 @@ public class KnowledgeController {
     @GetMapping("/entries")
     public Result<List<KnowledgeEntry>> listEntries(
             @RequestParam(required = false) String status,
-            @RequestParam(required = false) String errorType) {
-        if (errorType != null && !errorType.isEmpty()) {
-            return Result.success(knowledgeService.listByErrorType(errorType));
-        }
-        if (status != null && !status.isEmpty()) {
-            return Result.success(knowledgeService.listByStatus(status));
-        }
-        return Result.success(knowledgeService.listByStatus(KnowledgeEntryStatus.CONFIRMED.getCode()));
+            @RequestParam(required = false) String errorType,
+            @RequestParam(required = false) String appName) {
+        return Result.success(knowledgeService.listEntries(status, errorType, appName));
     }
 
     /**
@@ -63,7 +59,39 @@ public class KnowledgeController {
     @GetMapping("/whitelist-candidates")
     public Result<List<KnowledgeEntry>> whitelistCandidates(
             @RequestParam(defaultValue = "5") int minOccurrence) {
-        return Result.success(knowledgeService.findWhitelistCandidates(minOccurrence));
+        return Result.success(summaryService.findWhitelistCandidates(minOccurrence));
+    }
+
+    /**
+     * 查询高频错误指纹。
+     */
+    @GetMapping("/summaries/high-frequency")
+    public Result<List<ErrorFingerprintSummary>> highFrequency(
+            @RequestParam(defaultValue = "1") int hours,
+            @RequestParam(defaultValue = "5") int minOccurrences,
+            @RequestParam(defaultValue = "20") int limit) {
+        return Result.success(summaryService.findHighFrequency(hours, minOccurrences, limit));
+    }
+
+    /**
+     * 查询新增错误指纹。
+     */
+    @GetMapping("/summaries/new-fingerprints")
+    public Result<List<ErrorFingerprintSummary>> newFingerprints(
+            @RequestParam(defaultValue = "1") int hours,
+            @RequestParam(defaultValue = "20") int limit) {
+        return Result.success(summaryService.findNewFingerprints(hours, limit));
+    }
+
+    /**
+     * 查询突增错误指纹。
+     */
+    @GetMapping("/summaries/surging-fingerprints")
+    public Result<List<ErrorFingerprintSummary>> surgingFingerprints(
+            @RequestParam(defaultValue = "1") int hours,
+            @RequestParam(defaultValue = "5") int minIncrease,
+            @RequestParam(defaultValue = "20") int limit) {
+        return Result.success(summaryService.findSurgingFingerprints(hours, minIncrease, limit));
     }
 
     // ======================== M8-A04: 操作留痕查询 ========================

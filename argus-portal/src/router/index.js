@@ -5,6 +5,8 @@ import LoginPage from '../views/LoginPage.vue'
 import ReviewTaskPage from '../views/ReviewTaskPage.vue'
 import ScmConfigPage from '../views/ScmConfigPage.vue'
 import PersonalQualityPage from '../views/PersonalQualityPage.vue'
+import ErrorDiagnosisPage from '../views/ErrorDiagnosisPage.vue'
+import DataMonitorPage from '../views/DataMonitorPage.vue'
 import WebhookGuidePage from '../views/WebhookGuidePage.vue'
 import SettingsPage from '../views/SettingsPage.vue'
 
@@ -61,6 +63,24 @@ const router = createRouter({
       component: PersonalQualityPage,
       meta: {
         title: '个人代码质量',
+        section: '质量治理',
+      },
+    },
+    {
+      path: '/quality/errors',
+      name: 'error-diagnosis',
+      component: ErrorDiagnosisPage,
+      meta: {
+        title: '应用服务错误',
+        section: '质量治理',
+      },
+    },
+    {
+      path: '/quality/data-monitor',
+      name: 'data-monitor',
+      component: DataMonitorPage,
+      meta: {
+        title: '数据监控',
         section: '质量治理',
       },
     },

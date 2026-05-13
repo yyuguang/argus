@@ -33,7 +33,12 @@
       <article class="scm-stat">
         <span>通知开启</span>
         <strong>{{ notifyEnabledCount }}</strong>
-        <small>仓库级企微通知</small>
+        <small>SCM Webhook 可发送</small>
+      </article>
+      <article class="scm-stat">
+        <span>绑定应用</span>
+        <strong>{{ linkedAppCount }}</strong>
+        <small>已配置 appName 映射</small>
       </article>
     </div>
 
@@ -108,10 +113,39 @@
 
         <el-table-column label="通知" min-width="150">
           <template #default="{ row }">
-            <el-tag :type="isNotifyEnabled(row) ? 'success' : 'info'" effect="light">
-              {{ isNotifyEnabled(row) ? '已开启' : '已关闭' }}
+            <el-tag :type="notifyState(row).type" effect="light">
+              {{ notifyState(row).label }}
             </el-tag>
-            <div class="table-sub">{{ row.wechatNotifyWebhook ? '仓库级 Webhook' : '全局默认' }}</div>
+            <div class="table-sub">{{ notifyState(row).description }}</div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="绑定应用" min-width="220">
+          <template #default="{ row }">
+            <div class="app-tags">
+              <el-tag
+                v-for="mapping in mappingsForConfig(row).slice(0, 3)"
+                :key="mapping.id"
+                size="small"
+                effect="plain"
+              >
+                {{ mapping.appName }}
+              </el-tag>
+              <el-tag v-if="mappingsForConfig(row).length > 3" size="small" type="info" effect="plain">
+                +{{ mappingsForConfig(row).length - 3 }}
+              </el-tag>
+              <span v-if="!mappingsForConfig(row).length" class="muted-inline">未绑定</span>
+            </div>
+            <div class="table-sub">{{ mappingHealthText(row) }}</div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="源码定位" min-width="200">
+          <template #default="{ row }">
+            <el-tag :type="sourceHealth(row).type" effect="light">
+              {{ sourceHealth(row).label }}
+            </el-tag>
+            <div class="table-sub">{{ sourceHealth(row).description }}</div>
           </template>
         </el-table-column>
 
@@ -451,7 +485,7 @@
             <div class="form-section">
               <div class="section-title">
                 <h3>仓库级通知策略</h3>
-                <p>仓库级 Webhook 优先于全局默认 Webhook。编辑时留空表示保留原值。</p>
+                <p>企业微信配置只从 SCM 配置读取，同时影响 PR 评审通知与错误日志告警。</p>
               </div>
               <el-row :gutter="16">
                 <el-col :span="12">
@@ -470,12 +504,108 @@
                   v-model.trim="form.wechatNotifyWebhook"
                   type="password"
                   show-password
-                  placeholder="留空使用全局默认；编辑时留空表示保留原值"
+                  :placeholder="drawerMode === 'edit' && form.existingWechatWebhookConfigured ? '留空表示保留原 SCM Webhook' : '请输入 SCM 企业微信机器人 Webhook'"
                 />
               </el-form-item>
+              <el-alert
+                v-if="form.wechatNotifyEnabled && !form.wechatNotifyWebhook && !(drawerMode === 'edit' && form.existingWechatWebhookConfigured)"
+                type="warning"
+                show-icon
+                :closable="false"
+                title="开启企业微信通知后必须配置 Webhook，否则 PR 评审通知和错误日志告警都会跳过"
+              />
               <el-form-item label="低分告警阈值">
                 <el-input-number v-model="form.reviewConfig.notification.scoreAlertThreshold" :min="0" :max="100" controls-position="right" />
               </el-form-item>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane name="linkage">
+            <template #label>
+              <span class="tab-label"><el-icon><Connection /></el-icon>应用联动</span>
+            </template>
+            <div class="form-section">
+              <div class="section-title">
+                <div>
+                  <h3>appName 到当前 SCM 仓库的映射</h3>
+                  <p>一行代表一个微服务 appName；同一个 SCM 仓库可绑定多个服务，用于源码定位和企业微信告警。</p>
+                </div>
+                <el-button size="small" type="primary" :disabled="!canEditMappings" @click="addMappingDraft">
+                  新增应用映射
+                </el-button>
+              </div>
+
+              <el-alert
+                v-if="!canEditMappings"
+                type="warning"
+                show-icon
+                :closable="false"
+                title="请先保存 SCM 配置并确保 projectId 存在，再维护应用联动"
+              />
+
+              <el-alert
+                v-if="canEditMappings && moduleSourceRootOptions.length > 1"
+                type="info"
+                show-icon
+                :closable="false"
+                title="当前 SCM 已配置多个源码根，新增微服务映射时请为每个 appName 选择对应的服务源码根"
+              />
+
+              <el-table :data="currentMappings" border class="mapping-table">
+                <el-table-column label="服务 appName" min-width="170">
+                  <template #default="{ row }">
+                    <el-input v-if="row.__editing" v-model.trim="row.appName" placeholder="order-service" />
+                    <strong v-else>{{ row.appName }}</strong>
+                  </template>
+                </el-table-column>
+                <el-table-column label="服务源码根" min-width="240">
+                  <template #default="{ row }">
+                    <el-select
+                      v-if="row.__editing"
+                      v-model="row.sourceRoot"
+                      filterable
+                      allow-create
+                      default-first-option
+                      placeholder="例如 order-service/src/main/java"
+                    >
+                      <el-option v-for="root in moduleSourceRootOptions" :key="root" :label="root" :value="root" />
+                    </el-select>
+                    <span v-else>{{ row.sourceRoot || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="服务基础包" min-width="210">
+                  <template #default="{ row }">
+                    <el-input v-if="row.__editing" v-model.trim="row.basePackage" placeholder="com.demo.order" />
+                    <span v-else>{{ row.basePackage || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="默认分支" min-width="130">
+                  <template #default="{ row }">
+                    <el-input v-if="row.__editing" v-model.trim="row.defaultBranch" placeholder="main" />
+                    <span v-else>{{ row.defaultBranch || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="120">
+                  <template #default="{ row }">
+                    <el-tag :type="mappingHealth(row).type" effect="light">{{ mappingHealth(row).label }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="260" fixed="right">
+                  <template #default="{ row }">
+                    <template v-if="row.__editing">
+                      <el-button link type="primary" @click="saveMapping(row)">保存</el-button>
+                      <el-button link @click="cancelMapping(row)">取消</el-button>
+                    </template>
+                    <template v-else>
+                      <el-button link type="primary" @click="openDataMonitorDrawer(row)">数据监控</el-button>
+                      <el-button link type="primary" @click="editMapping(row)">编辑</el-button>
+                      <el-button link type="danger" @click="removeMapping(row)">删除</el-button>
+                    </template>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <el-empty v-if="canEditMappings && !currentMappings.length" description="当前 SCM 仓库尚未绑定 appName" />
             </div>
           </el-tab-pane>
 
@@ -529,11 +659,256 @@
             <dt>评审策略</dt>
             <dd>阈值 {{ scoreThreshold(detailConfig) }} 分，最大文件数 {{ maxReviewFiles(detailConfig) }}</dd>
             <dt>通知</dt>
-            <dd>{{ isNotifyEnabled(detailConfig) ? '开启' : '关闭' }}</dd>
+            <dd>{{ notifyState(detailConfig).label }}：{{ notifyState(detailConfig).description }}</dd>
+            <dt>绑定应用</dt>
+            <dd>
+              <span v-if="mappingsForConfig(detailConfig).length">
+                {{ mappingsForConfig(detailConfig).map((item) => item.appName).join('，') }}
+              </span>
+              <span v-else>未绑定 appName</span>
+            </dd>
           </dl>
         </div>
       </template>
     </el-drawer>
+
+    <el-drawer
+      v-model="dataMonitorVisible"
+      :title="selectedMapping ? `数据监控配置 - ${selectedMapping.appName}` : '数据监控配置'"
+      size="920px"
+      destroy-on-close
+    >
+      <template v-if="selectedMapping">
+        <el-alert
+          class="scm-alert"
+          type="info"
+          show-icon
+          :closable="false"
+          title="数据监控配置绑定当前 SCM 应用映射，Argus 仅使用只读账号采集，不会在生产库执行索引或 DDL。"
+        />
+
+        <div class="form-section">
+          <div class="section-title">
+            <div>
+              <h3>监控总配置</h3>
+              <p>控制该 appName 是否接入数据库观测，以及预警沿用 SCM 通知还是自定义策略。</p>
+            </div>
+            <el-button type="primary" :loading="dataMonitorSaving" @click="saveMonitorOverview">保存总配置</el-button>
+          </div>
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="启用监控">
+                <el-switch v-model="monitorForm.enabled" active-text="启用" inactive-text="停用" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="负责团队">
+                <el-input v-model.trim="monitorForm.ownerTeam" placeholder="例如 交易平台" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="技术负责人">
+                <el-input v-model.trim="monitorForm.techOwner" placeholder="例如 zhangsan" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="告警 Webhook">
+                <el-select v-model="monitorForm.alertWebhookMode" style="width: 100%">
+                  <el-option label="沿用 SCM Webhook" value="SCM_CONFIG" />
+                  <el-option label="仅记录不通知" value="NONE" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="备注">
+            <el-input v-model.trim="monitorForm.remark" type="textarea" :rows="2" placeholder="说明接入范围、库实例或巡检注意事项" />
+          </el-form-item>
+        </div>
+
+        <div class="form-section">
+          <div class="section-title">
+            <div>
+              <h3>只读数据源</h3>
+              <p>用于采集 processlist、事务、锁等待、全局状态与 EXPLAIN；账号必须保持只读。</p>
+            </div>
+            <el-button type="primary" :loading="dataMonitorSaving" @click="addDatasource">新增数据源</el-button>
+          </div>
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="数据源编码">
+                <el-input v-model.trim="datasourceForm.datasourceCode" placeholder="order-main" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="显示名称">
+                <el-input v-model.trim="datasourceForm.datasourceName" placeholder="订单主库" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="JDBC URL">
+                <el-input v-model.trim="datasourceForm.jdbcUrl" placeholder="jdbc:mysql://host:3306/db?useSSL=false" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="库名">
+                <el-input v-model.trim="datasourceForm.databaseName" placeholder="database" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="用户名">
+                <el-input v-model.trim="datasourceForm.username" placeholder="readonly_user" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="密码">
+                <el-input v-model.trim="datasourceForm.password" type="password" show-password placeholder="只读账号密码" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="采集能力">
+                <el-checkbox v-model="datasourceForm.collectOptions.explain">EXPLAIN</el-checkbox>
+                <el-checkbox v-model="datasourceForm.collectOptions.fullSql">完整 SQL</el-checkbox>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-table :data="dataSources" v-loading="dataMonitorLoading" border class="mapping-table">
+            <el-table-column label="编码" prop="datasourceCode" min-width="150" />
+            <el-table-column label="库" min-width="180">
+              <template #default="{ row }">
+                <div class="table-main">{{ row.databaseName || '-' }}</div>
+                <div class="table-sub">{{ row.jdbcUrl || '-' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="账号" prop="username" width="150" />
+            <el-table-column label="能力" min-width="180">
+              <template #default="{ row }">
+                <el-tag v-if="row.readonly !== false" size="small" type="success" effect="plain">只读</el-tag>
+                <el-tag v-if="row.explainEnabled" size="small" effect="plain">EXPLAIN</el-tag>
+                <el-tag v-if="row.fullSqlCollectEnabled" size="small" effect="plain">完整 SQL</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="120">
+              <template #default="{ row }">
+                <el-switch :model-value="Boolean(row.enabled)" @change="toggleDatasource(row)" />
+              </template>
+            </el-table-column>
+            <el-table-column label="Slow Log" fixed="right" width="150">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSlowLog(row)">配置</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="form-section">
+          <div class="section-title">
+            <div>
+              <h3>接口日志表质量</h3>
+              <p>支持不同系统各自配置接口日志表，不限定为 gaea_api_history。</p>
+            </div>
+            <el-button type="primary" :disabled="!dataSources.length" :loading="dataMonitorSaving" @click="addLogTable">新增日志表</el-button>
+          </div>
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="数据源">
+                <el-select v-model="logTableForm.datasourceId" placeholder="选择数据源" style="width: 100%">
+                  <el-option v-for="item in dataSources" :key="item.id" :label="item.datasourceCode" :value="item.id" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="配置名称">
+                <el-input v-model.trim="logTableForm.configName" placeholder="接口日志表" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="表名">
+                <el-input v-model.trim="logTableForm.tableName" placeholder="api_history" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="时间列">
+                <el-input v-model.trim="logTableForm.requestTimeColumn" placeholder="request_time" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="主键列">
+                <el-input v-model.trim="logTableForm.primaryKeyColumn" placeholder="id" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="接口列">
+                <el-input v-model.trim="logTableForm.interfaceCodeColumn" placeholder="interface_code" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="响应列">
+                <el-input v-model.trim="logTableForm.responseBodyColumn" placeholder="response_body" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="requestId 列">
+                <el-input v-model.trim="logTableForm.requestIdColumn" placeholder="request_id" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-table :data="logTables" v-loading="dataMonitorLoading" border class="mapping-table">
+            <el-table-column label="配置" min-width="180">
+              <template #default="{ row }">
+                <div class="table-main">{{ row.configName || row.tableName }}</div>
+                <div class="table-sub">{{ row.tableName }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="数据源" prop="datasourceId" width="120" />
+            <el-table-column label="关键列" min-width="260">
+              <template #default="{ row }">
+                <div class="table-sub">PK {{ row.primaryKeyColumn || '-' }}；接口 {{ row.interfaceCodeColumn || '-' }}</div>
+                <div class="table-sub">响应 {{ row.responseBodyColumn || '-' }}；requestId {{ row.requestIdColumn || '-' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="120">
+              <template #default="{ row }">
+                <el-switch :model-value="Boolean(row.enabled)" @change="toggleLogTable(row)" />
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </template>
+    </el-drawer>
+
+    <el-dialog v-model="slowLogVisible" title="Slow Log 文件接入" width="560px">
+      <el-form label-position="top">
+        <el-form-item label="启用 slow log 文件采集">
+          <el-switch v-model="slowLogForm.enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+        <el-form-item label="文件路径">
+          <el-input v-model.trim="slowLogForm.logPath" placeholder="/data/mysql/slow.log" />
+        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="字符集">
+              <el-input v-model.trim="slowLogForm.charset" placeholder="UTF-8" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="最小耗时 ms">
+              <el-input-number v-model="slowLogForm.minQueryTimeMs" :min="0" controls-position="right" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="完整 SQL">
+          <el-switch v-model="slowLogForm.collectFullSql" active-text="采集" inactive-text="脱敏展示" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="slowLogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dataMonitorSaving" @click="saveSlowLog">保存</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -555,7 +930,27 @@ import {
   Setting,
   View,
 } from '@element-plus/icons-vue'
-import { createScmConfig, fetchScmConfigs, updateScmConfig } from '../api/scm'
+import {
+  createProjectMapping,
+  createScmConfig,
+  deleteProjectMapping,
+  fetchProjectMappings,
+  fetchScmConfigs,
+  updateProjectMapping,
+  updateScmConfig,
+} from '../api/scm'
+import {
+  createDataSource,
+  createLogTable,
+  fetchDataMonitorOverview,
+  fetchDataSources,
+  fetchLogTables,
+  fetchSlowLogConfig,
+  saveDataMonitorOverview,
+  saveSlowLogConfig,
+  setDataSourceEnabled,
+  setLogTableEnabled,
+} from '../api/dataMonitor'
 
 const providerDefaults = {
   gitlab: {
@@ -605,6 +1000,8 @@ const argusExample = {
 }
 
 const configs = ref([])
+const projectMappings = ref([])
+const mappingDrafts = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const errorMessage = ref('')
@@ -617,6 +1014,19 @@ const advancedReviewConfigJson = ref('')
 const detailVisible = ref(false)
 const detailConfig = ref(null)
 const formRef = ref()
+const dataMonitorVisible = ref(false)
+const dataMonitorLoading = ref(false)
+const dataMonitorSaving = ref(false)
+const selectedMapping = ref(null)
+const dataSources = ref([])
+const logTables = ref([])
+const slowLogVisible = ref(false)
+const slowLogDatasource = ref(null)
+
+const monitorForm = reactive(createMonitorForm())
+const datasourceForm = reactive(createDatasourceForm())
+const logTableForm = reactive(createLogTableForm())
+const slowLogForm = reactive(createSlowLogForm())
 
 const filters = reactive({
   provider: '',
@@ -628,7 +1038,19 @@ const form = reactive(createEmptyForm())
 
 const enabledCount = computed(() => configs.value.filter((item) => item.enabled).length)
 const triggerConfiguredCount = computed(() => configs.value.filter((item) => hasTriggerConfig(item)).length)
-const notifyEnabledCount = computed(() => configs.value.filter((item) => isNotifyEnabled(item)).length)
+const notifyEnabledCount = computed(() => configs.value.filter((item) => notifyState(item).status === 'ready').length)
+const linkedAppCount = computed(() => new Set(projectMappings.value.map((item) => item.appName).filter(Boolean)).size)
+
+const canEditMappings = computed(() => drawerMode.value === 'edit' && form.projectId && form.scmProvider)
+const moduleSourceRootOptions = computed(() => parseJsonArray(form.moduleSourceRoots))
+
+const currentMappings = computed(() => {
+  if (!canEditMappings.value) return []
+  const matched = projectMappings.value
+    .filter((item) => isMappingForConfig(item, form))
+    .map((item) => ({ ...item, __editing: false }))
+  return [...mappingDrafts.value, ...matched]
+})
 
 const filteredConfigs = computed(() => {
   return configs.value.filter((item) => {
@@ -764,7 +1186,84 @@ function createEmptyForm() {
     description: '',
     wechatNotifyEnabled: true,
     wechatNotifyWebhook: '',
+    existingWechatWebhookConfigured: false,
     reviewConfig: defaultReviewConfig(),
+  }
+}
+
+function createMonitorForm() {
+  return {
+    enabled: true,
+    ownerTeam: '',
+    techOwner: '',
+    alertWebhookMode: 'SCM_CONFIG',
+    remark: '',
+  }
+}
+
+function createDatasourceForm() {
+  return {
+    datasourceCode: '',
+    datasourceName: '',
+    dbType: 'mysql',
+    dbVersion: '5.7',
+    jdbcUrl: '',
+    databaseName: '',
+    username: '',
+    password: '',
+    readonly: true,
+    enabled: true,
+    thresholds: {
+      longSqlSeconds: 10,
+      longTransactionSeconds: 30,
+      lockWaitSeconds: 5,
+      connectionUsagePercent: 80,
+    },
+    collectOptions: {
+      processlist: true,
+      innodbTransaction: true,
+      innodbLock: true,
+      globalStatus: true,
+      explain: true,
+      fullSql: true,
+    },
+  }
+}
+
+function createLogTableForm() {
+  return {
+    datasourceId: null,
+    configName: '',
+    tableName: '',
+    primaryKeyColumn: 'id',
+    interfaceCodeColumn: 'interface_code',
+    requestTimeColumn: 'request_time',
+    responseTimeColumn: 'response_time',
+    responseBodyColumn: 'response_body',
+    statusCodeColumn: 'status_code',
+    requestIdColumn: 'request_id',
+    traceIdColumn: 'trace_id',
+    scanMode: 'INCREMENTAL',
+    enabled: true,
+    qualityRules: {
+      scanWindowMinutes: 30,
+      minSampleCount: 20,
+      maxEmptyResponseRate: 0.05,
+      maxMissingRequestIdRate: 0.1,
+    },
+    alertRules: null,
+  }
+}
+
+function createSlowLogForm() {
+  return {
+    enabled: true,
+    sourceType: 'FILE',
+    logPath: '',
+    charset: 'UTF-8',
+    minQueryTimeMs: 1000,
+    collectFullSql: true,
+    cursorOffset: 0,
   }
 }
 
@@ -778,6 +1277,7 @@ function openCreateDrawer() {
   drawerMode.value = 'create'
   editingId.value = null
   activeTab.value = 'basic'
+  mappingDrafts.value = []
   resetForm()
   drawerVisible.value = true
 }
@@ -786,6 +1286,7 @@ function openEditDrawer(item) {
   drawerMode.value = 'edit'
   editingId.value = item.id
   activeTab.value = 'basic'
+  mappingDrafts.value = []
   assignFormFromConfig(item)
   drawerVisible.value = true
 }
@@ -817,6 +1318,7 @@ function assignFormFromConfig(item) {
     description: item.description || '',
     wechatNotifyEnabled: item.wechatNotifyEnabled == null ? true : Number(item.wechatNotifyEnabled) === 1,
     wechatNotifyWebhook: '',
+    existingWechatWebhookConfigured: Boolean(item.wechatNotifyWebhook),
     reviewConfig: parseReviewConfig(item.reviewConfig),
   })
   advancedReviewConfigJson.value = JSON.stringify(form.reviewConfig, null, 2)
@@ -891,6 +1393,13 @@ function validatePayload(payload) {
   if (!payload.projectId && !(payload.repoOwner && payload.repoName)) {
     throw new Error('请至少填写项目 ID，或同时填写仓库归属和仓库名称')
   }
+  const keepsExistingWebhook = drawerMode.value === 'edit' && form.existingWechatWebhookConfigured
+  if (payload.wechatNotifyEnabled === 1 && !payload.wechatNotifyWebhook && !keepsExistingWebhook) {
+    throw new Error('开启企业微信通知时，必须配置 SCM 企业微信 Webhook')
+  }
+  if (payload.wechatNotifyWebhook && !isValidWebhook(payload.wechatNotifyWebhook)) {
+    throw new Error('企业微信 Webhook 必须是 http:// 或 https:// 开头的完整 URL')
+  }
   validateJsonField(payload.basePackages, '基础包列表')
   validateJsonField(payload.moduleSourceRoots, '模块源码根列表')
   validateJsonField(payload.packageModuleMappings, '包到模块映射')
@@ -898,6 +1407,15 @@ function validatePayload(payload) {
   const trigger = JSON.parse(payload.reviewConfig).trigger
   if (trigger.branchMode === 'SOURCE_AND_TARGET' && (!trigger.sourceBranches || !trigger.sourceBranches.length)) {
     throw new Error('分支模式为“源 + 目标”时，源分支不能为空')
+  }
+}
+
+function isValidWebhook(value) {
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol)
+  } catch {
+    return false
   }
 }
 
@@ -923,7 +1441,9 @@ async function loadConfigs() {
   loading.value = true
   errorMessage.value = ''
   try {
-    configs.value = await fetchScmConfigs()
+    const [scmData, mappingData] = await Promise.all([fetchScmConfigs(), fetchProjectMappings()])
+    configs.value = scmData || []
+    projectMappings.value = mappingData || []
   } catch (error) {
     errorMessage.value = error.message || '加载 SCM 配置失败'
   } finally {
@@ -944,6 +1464,7 @@ async function handleSubmit() {
       ElMessage.success('仓库配置已创建')
     }
     drawerVisible.value = false
+    mappingDrafts.value = []
     await loadConfigs()
   } catch (error) {
     ElMessage.error(error.message || '保存 SCM 配置失败')
@@ -1022,6 +1543,349 @@ function isNotifyEnabled(row) {
   return row.wechatNotifyEnabled == null || Number(row.wechatNotifyEnabled) === 1
 }
 
+function notifyState(row) {
+  if (!isNotifyEnabled(row)) {
+    return { status: 'disabled', label: '已关闭', description: 'PR 评审与错误告警均不发送', type: 'info' }
+  }
+  if (!row.wechatNotifyWebhook) {
+    return { status: 'missing', label: '未配置', description: '缺少 SCM Webhook', type: 'warning' }
+  }
+  if (!isValidWebhook(row.wechatNotifyWebhook)) {
+    return { status: 'invalid', label: '配置异常', description: 'Webhook URL 非法', type: 'danger' }
+  }
+  return { status: 'ready', label: '可发送', description: '使用 SCM Webhook', type: 'success' }
+}
+
+function scmKey(provider, projectId) {
+  return `${provider || ''}:${projectId || ''}`
+}
+
+function configKey(config) {
+  return scmKey(config.scmProvider, config.projectId)
+}
+
+function mappingKey(mapping) {
+  return scmKey(mapping.scmProvider, mapping.scmProjectId)
+}
+
+function isMappingForConfig(mapping, config) {
+  return mappingKey(mapping) === configKey(config)
+}
+
+function mappingsForConfig(config) {
+  if (!config?.projectId) return []
+  return projectMappings.value.filter((item) => isMappingForConfig(item, config))
+}
+
+function sourceHealth(config) {
+  const mappings = mappingsForConfig(config)
+  if (!mappings.length) {
+    return { type: 'warning', label: '未绑定', description: '缺少 appName 映射' }
+  }
+  const incompleteCount = mappings.filter((item) => !item.sourceRoot || !item.basePackage || !item.defaultBranch).length
+  if (incompleteCount) {
+    return { type: 'warning', label: '部分缺失', description: `${incompleteCount} 个映射缺少源码字段` }
+  }
+  return { type: 'success', label: '完整', description: `${mappings.length} 个应用可定位` }
+}
+
+function mappingHealthText(config) {
+  const mappings = mappingsForConfig(config)
+  if (!mappings.length) return '错误日志无法联动到该 SCM'
+  return `${mappings.length} 个 appName 已联动`
+}
+
+function mappingHealth(mapping) {
+  if (!mapping.appName) return { type: 'danger', label: '缺 appName' }
+  if (!mapping.sourceRoot || !mapping.basePackage || !mapping.defaultBranch) {
+    return { type: 'warning', label: '待补齐' }
+  }
+  return { type: 'success', label: '可定位' }
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((item) => String(item || '').trim()).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function defaultSourceRoot() {
+  const roots = moduleSourceRootOptions.value
+  if (roots.length === 1) return roots[0]
+  if (roots.length > 1) return ''
+  return 'src/main/java'
+}
+
+function defaultBasePackage() {
+  return parseJsonArray(form.basePackages)[0] || ''
+}
+
+function addMappingDraft() {
+  if (!canEditMappings.value) return
+  mappingDrafts.value.unshift({
+    __draft: true,
+    __editing: true,
+    appName: '',
+    scmProvider: form.scmProvider,
+    scmProjectId: form.projectId,
+    sourceRoot: defaultSourceRoot(),
+    basePackage: defaultBasePackage(),
+    defaultBranch: 'main',
+  })
+}
+
+function editMapping(row) {
+  row.__editing = true
+  row.__snapshot = { ...row }
+}
+
+function cancelMapping(row) {
+  if (row.__draft) {
+    mappingDrafts.value = mappingDrafts.value.filter((item) => item !== row)
+    return
+  }
+  Object.assign(row, row.__snapshot || {}, { __editing: false, __snapshot: null })
+}
+
+async function saveMapping(row) {
+  try {
+    validateMapping(row)
+    const payload = {
+      appName: row.appName,
+      scmProvider: form.scmProvider,
+      scmProjectId: form.projectId,
+      sourceRoot: row.sourceRoot,
+      basePackage: row.basePackage,
+      defaultBranch: row.defaultBranch,
+    }
+    if (row.__draft) {
+      await createProjectMapping(payload)
+      ElMessage.success('应用映射已创建')
+      mappingDrafts.value = mappingDrafts.value.filter((item) => item !== row)
+    } else {
+      await updateProjectMapping(row.id, payload)
+      ElMessage.success('应用映射已更新')
+    }
+    await loadConfigs()
+  } catch (error) {
+    ElMessage.error(error.message || '保存应用映射失败')
+  }
+}
+
+function validateMapping(row) {
+  if (!row.appName) throw new Error('appName 不能为空')
+  if (!/^[A-Za-z0-9_.-]{2,100}$/.test(row.appName)) {
+    throw new Error('appName 仅支持字母、数字、下划线、中划线和点号，长度 2-100')
+  }
+  if (!row.sourceRoot) throw new Error('服务源码根不能为空')
+  if (row.sourceRoot.startsWith('/')) throw new Error('服务源码根不能以 / 开头')
+  if (!row.defaultBranch) throw new Error('默认分支不能为空')
+  const duplicate = [...projectMappings.value, ...mappingDrafts.value].some((item) => {
+    if (item === row || item.id === row.id) return false
+    return item.appName === row.appName
+  })
+  if (duplicate) throw new Error(`appName ${row.appName} 已存在，一个 appName 只能绑定一个服务源码位置`)
+}
+
+async function removeMapping(row) {
+  try {
+    await ElMessageBox.confirm(
+      `删除后，${row.appName} 的错误日志将无法通过当前 SCM 完成源码定位和企业微信告警。确认删除吗？`,
+      '删除应用映射',
+      { type: 'warning' },
+    )
+    await deleteProjectMapping(row.id)
+    ElMessage.success('应用映射已删除')
+    await loadConfigs()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.message || '删除应用映射失败')
+    }
+  }
+}
+
+async function openDataMonitorDrawer(row) {
+  if (!currentScmConfigId() || !row.id) {
+    ElMessage.warning('请先保存 SCM 配置和应用映射')
+    return
+  }
+  selectedMapping.value = row
+  dataMonitorVisible.value = true
+  resetDataMonitorForms()
+  await loadDataMonitorConfig()
+}
+
+function resetDataMonitorForms() {
+  Object.assign(monitorForm, createMonitorForm())
+  Object.assign(datasourceForm, createDatasourceForm())
+  Object.assign(logTableForm, createLogTableForm())
+  Object.assign(slowLogForm, createSlowLogForm())
+  dataSources.value = []
+  logTables.value = []
+  slowLogDatasource.value = null
+}
+
+async function loadDataMonitorConfig() {
+  if (!selectedMapping.value) return
+  dataMonitorLoading.value = true
+  try {
+    const [overview, datasourceList, logTableList] = await Promise.all([
+      fetchDataMonitorOverview(currentScmConfigId(), selectedMapping.value.id),
+      fetchDataSources(currentScmConfigId(), selectedMapping.value.id),
+      fetchLogTables(currentScmConfigId(), selectedMapping.value.id),
+    ])
+    Object.assign(monitorForm, {
+      enabled: overview?.enabled !== false,
+      ownerTeam: overview?.ownerTeam || '',
+      techOwner: overview?.techOwner || '',
+      alertWebhookMode: overview?.alertWebhookMode || 'SCM_CONFIG',
+      remark: overview?.remark || '',
+    })
+    dataSources.value = datasourceList || []
+    logTables.value = logTableList || []
+    if (!logTableForm.datasourceId && dataSources.value.length) {
+      logTableForm.datasourceId = dataSources.value[0].id
+    }
+  } catch (error) {
+    ElMessage.error(error.message || '加载数据监控配置失败')
+  } finally {
+    dataMonitorLoading.value = false
+  }
+}
+
+async function saveMonitorOverview() {
+  if (!selectedMapping.value) return
+  dataMonitorSaving.value = true
+  try {
+    await saveDataMonitorOverview(currentScmConfigId(), selectedMapping.value.id, {
+      enabled: monitorForm.enabled,
+      ownerTeam: monitorForm.ownerTeam || null,
+      techOwner: monitorForm.techOwner || null,
+      alertWebhookMode: monitorForm.alertWebhookMode || 'SCM_CONFIG',
+      remark: monitorForm.remark || null,
+    })
+    ElMessage.success('数据监控总配置已保存')
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '保存数据监控总配置失败')
+  } finally {
+    dataMonitorSaving.value = false
+  }
+}
+
+async function addDatasource() {
+  if (!selectedMapping.value) return
+  if (!datasourceForm.datasourceCode || !datasourceForm.jdbcUrl || !datasourceForm.username) {
+    ElMessage.warning('请填写数据源编码、JDBC URL 和只读用户名')
+    return
+  }
+  dataMonitorSaving.value = true
+  try {
+    await createDataSource(currentScmConfigId(), selectedMapping.value.id, {
+      ...datasourceForm,
+      datasourceName: datasourceForm.datasourceName || datasourceForm.datasourceCode,
+    })
+    ElMessage.success('数据源已新增')
+    Object.assign(datasourceForm, createDatasourceForm())
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '新增数据源失败')
+  } finally {
+    dataMonitorSaving.value = false
+  }
+}
+
+async function toggleDatasource(row) {
+  if (!selectedMapping.value) return
+  try {
+    await setDataSourceEnabled(currentScmConfigId(), selectedMapping.value.id, row.id, !row.enabled)
+    ElMessage.success('数据源状态已更新')
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '更新数据源状态失败')
+  }
+}
+
+async function openSlowLog(row) {
+  if (!selectedMapping.value) return
+  slowLogDatasource.value = row
+  Object.assign(slowLogForm, createSlowLogForm())
+  try {
+    const config = await fetchSlowLogConfig(currentScmConfigId(), selectedMapping.value.id, row.id)
+    Object.assign(slowLogForm, {
+      enabled: config?.enabled !== false,
+      sourceType: config?.sourceType || 'FILE',
+      logPath: config?.logPath || '',
+      charset: config?.charset || 'UTF-8',
+      minQueryTimeMs: config?.minQueryTimeMs ?? 1000,
+      collectFullSql: config?.collectFullSql !== false,
+      cursorOffset: config?.cursorOffset || 0,
+    })
+  } catch {
+    Object.assign(slowLogForm, createSlowLogForm())
+  }
+  slowLogVisible.value = true
+}
+
+async function saveSlowLog() {
+  if (!selectedMapping.value || !slowLogDatasource.value) return
+  dataMonitorSaving.value = true
+  try {
+    await saveSlowLogConfig(currentScmConfigId(), selectedMapping.value.id, slowLogDatasource.value.id, slowLogForm)
+    ElMessage.success('Slow Log 配置已保存')
+    slowLogVisible.value = false
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '保存 Slow Log 配置失败')
+  } finally {
+    dataMonitorSaving.value = false
+  }
+}
+
+async function addLogTable() {
+  if (!selectedMapping.value) return
+  if (!logTableForm.datasourceId || !logTableForm.tableName || !logTableForm.primaryKeyColumn) {
+    ElMessage.warning('请填写数据源、表名和主键列')
+    return
+  }
+  dataMonitorSaving.value = true
+  try {
+    await createLogTable(currentScmConfigId(), selectedMapping.value.id, {
+      ...logTableForm,
+      configName: logTableForm.configName || logTableForm.tableName,
+    })
+    ElMessage.success('接口日志表配置已新增')
+    Object.assign(logTableForm, createLogTableForm())
+    if (dataSources.value.length) {
+      logTableForm.datasourceId = dataSources.value[0].id
+    }
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '新增接口日志表配置失败')
+  } finally {
+    dataMonitorSaving.value = false
+  }
+}
+
+async function toggleLogTable(row) {
+  if (!selectedMapping.value) return
+  try {
+    await setLogTableEnabled(currentScmConfigId(), selectedMapping.value.id, row.id, !row.enabled)
+    ElMessage.success('接口日志表状态已更新')
+    await loadDataMonitorConfig()
+  } catch (error) {
+    ElMessage.error(error.message || '更新接口日志表状态失败')
+  }
+}
+
+function currentScmConfigId() {
+  return editingId.value
+}
+
 function webhookUrlFor(provider) {
   return `${window.location.origin}/api/v1/webhook/${provider || 'gitlab'}`
 }
@@ -1079,7 +1943,7 @@ onMounted(async () => {
 
 .scm-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -1171,6 +2035,22 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.app-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.muted-inline {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mapping-table {
+  margin-top: 14px;
 }
 
 .tab-label {

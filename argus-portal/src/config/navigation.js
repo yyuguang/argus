@@ -42,6 +42,18 @@ export const menuGroups = [
         description: '查看提交者画像、趋势与高频问题',
         icon: '◈',
       },
+      {
+        path: '/quality/errors',
+        label: '错误诊断',
+        description: '查看应用服务错误、AI 分析与处理闭环',
+        icon: '!',
+      },
+      {
+        path: '/quality/data-monitor',
+        label: '数据监控',
+        description: '查看慢 SQL、连接池与接口日志质量',
+        icon: '▥',
+      },
     ],
   },
   {

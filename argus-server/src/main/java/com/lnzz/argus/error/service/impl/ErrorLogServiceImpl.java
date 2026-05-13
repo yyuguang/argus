@@ -6,6 +6,7 @@ import com.lnzz.argus.error.service.ErrorLogService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
+import com.lnzz.argus.config.ErrorProcessingProperties;
 import com.lnzz.argus.error.entity.AgentPushBatch;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.entity.ErrorContextLog;
@@ -15,20 +16,22 @@ import com.lnzz.argus.error.mapper.ErrorEventMapper;
 import com.lnzz.argus.error.metrics.ErrorLogMetrics;
 import com.lnzz.argus.error.model.BatchLogRequest;
 import com.lnzz.argus.error.model.ErrorLogEntry;
-import com.lnzz.argus.error.parse.AnalysisDecision;
-import com.lnzz.argus.error.parse.ErrorType;
+import com.lnzz.argus.common.enums.AnalysisDecision;
+import com.lnzz.argus.common.enums.ErrorType;
 import com.lnzz.argus.error.parse.ErrorTypeIdentifier;
 import com.lnzz.argus.error.parse.FingerprintGenerator;
 import com.lnzz.argus.error.parse.IdentifierExtractor;
-import com.lnzz.argus.error.parse.LogSource;
-import com.lnzz.argus.error.parse.ProcessingStatus;
-import com.lnzz.argus.error.parse.SeverityLevel;
+import com.lnzz.argus.common.enums.LogSource;
+import com.lnzz.argus.common.enums.ProcessingStatus;
 import com.lnzz.argus.error.parse.SeverityRuleEngine;
-import com.lnzz.argus.error.parse.SeveritySource;
-import com.lnzz.argus.error.parse.SourceType;
+import com.lnzz.argus.common.enums.SeveritySource;
+import com.lnzz.argus.common.enums.SourceType;
 import com.lnzz.argus.error.parse.ParsedStackTrace;
 import com.lnzz.argus.error.parse.StackFrame;
 import com.lnzz.argus.error.parse.StackTraceParser;
+import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
+import com.lnzz.argus.common.enums.KnowledgeEntryStatus;
+import com.lnzz.argus.knowledge.service.KnowledgeMatcher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -52,9 +55,6 @@ import java.util.*;
 @Service
 public class ErrorLogServiceImpl implements ErrorLogService {
 
-    /** 同指纹去重窗口（秒） */
-    private static final long DEDUP_WINDOW_SECONDS = 60;
-
     private final ErrorEventMapper errorEventMapper;
     private final AgentPushBatchMapper batchMapper;
     private final ObjectMapper objectMapper;
@@ -66,6 +66,8 @@ public class ErrorLogServiceImpl implements ErrorLogService {
     private final SeverityRuleEngine severityRuleEngine;
     private final ErrorContextLogMapper contextLogMapper;
     private final ErrorAnalysisService analysisService;
+    private final KnowledgeMatcher knowledgeMatcher;
+    private final ErrorProcessingProperties errorProcessingProperties;
 
     /** 自注入 —— 使批量循环内调用走 Spring AOP 代理 */
     @Lazy
@@ -82,7 +84,9 @@ public class ErrorLogServiceImpl implements ErrorLogService {
                                FingerprintGenerator fingerprintGenerator,
                                SeverityRuleEngine severityRuleEngine,
                                ErrorContextLogMapper contextLogMapper,
-                               ErrorAnalysisService analysisService) {
+                               ErrorAnalysisService analysisService,
+                               KnowledgeMatcher knowledgeMatcher,
+                               ErrorProcessingProperties errorProcessingProperties) {
         this.errorEventMapper = errorEventMapper;
         this.batchMapper = batchMapper;
         this.objectMapper = objectMapper;
@@ -94,6 +98,10 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         this.severityRuleEngine = severityRuleEngine;
         this.contextLogMapper = contextLogMapper;
         this.analysisService = analysisService;
+        this.knowledgeMatcher = knowledgeMatcher;
+        this.errorProcessingProperties = errorProcessingProperties != null
+                ? errorProcessingProperties
+                : new ErrorProcessingProperties();
     }
 
     /**
@@ -113,8 +121,9 @@ public class ErrorLogServiceImpl implements ErrorLogService {
 
         ErrorEvent event = toErrorEvent(entry);
 
-        // M4-B04: 指纹去重 —— 同指纹 60s 内聚合而非新建
-        ErrorEvent existing = errorEventMapper.findLatestByFingerprint(event.getErrorFingerprint());
+        // M4-B04: 指纹去重 —— 同 app + env + fingerprint 在 60s 内聚合而非新建
+        ErrorEvent existing = errorEventMapper.findLatestByAppEnvFingerprint(
+                event.getAppName(), event.getEnvironment(), event.getErrorFingerprint());
         if (existing != null && isWithinDedupWindow(existing)) {
             errorEventMapper.aggregateOccurrence(existing.getId(), event.getOccurredAt(),
                     event.getBusinessKey(), event.getTraceId());
@@ -122,30 +131,47 @@ public class ErrorLogServiceImpl implements ErrorLogService {
             result.put("existingEventId", existing.getId());
             result.put("fingerprint", event.getErrorFingerprint());
             metrics.recordLogDuplicated(entry.getAppName());
+            if (shouldUpgradeRepeatedAggregate(existing)) {
+                result.put("repeatUpgrade", true);
+                result.put("analysisDecision", AnalysisDecision.MUST_ANALYZE.getCode());
+                triggerAnalysisAfterCommit(existing.getId());
+                log.info("同指纹重复达到升级阈值，触发既有事件AI分析: existingId={}, occurrenceCount={}",
+                        existing.getId(), nextOccurrenceCount(existing));
+            }
             log.debug("同指纹聚合: appName={}, logId={}, fingerprint={}, existingId={}",
                     entry.getAppName(), entry.getLogId(),
                     event.getErrorFingerprint().substring(0, 16), existing.getId());
             return result;
         }
 
+        // 是否为新指纹决定严重度和分析策略。窗口外重复事件可入库，但不再按“新指纹”升级。
+        applySeverity(event, existing == null);
+
         try {
             errorEventMapper.insert(event);
             result.put("status", "ACCEPTED");
             result.put("errorEventId", event.getId());
+            result.put("analysisDecision", event.getAnalysisDecision());
             metrics.recordLogReceived(entry.getAppName(), entry.getLogSource(), entry.getLogLevel());
 
             // M4-B06: 上下文日志快照落库
             saveContextLogs(event.getId(), entry.getContextLogs());
 
-            // 异步 AI 分析 → 等当前事务提交后再触发，避免异步线程读不到 event
-            Long eventId = event.getId();
-            TransactionSynchronizationManager.registerSynchronization(
-                    new TransactionSynchronization() {
-                        @Override
-                        public void afterCommit() {
-                            analysisService.analyzeEvent(eventId);
-                        }
-                    });
+            // 异步 AI 分析 → 等当前事务提交后再触发，避免异步线程读不到 event。
+            KnowledgeEntry exactKnowledge = findExactConfirmedKnowledge(event);
+            if (exactKnowledge != null) {
+                result.put("analysisSkipped", true);
+                result.put("skipReason", "KNOWLEDGE_HIT");
+                result.put("knowledgeEntryId", exactKnowledge.getId());
+                log.info("错误事件命中已确认知识，跳过AI分析: eventId={}, knowledgeId={}, status={}",
+                        event.getId(), exactKnowledge.getId(), exactKnowledge.getStatus());
+            } else if (shouldTriggerAnalysis(event)) {
+                triggerAnalysisAfterCommit(event.getId());
+            } else {
+                result.put("analysisSkipped", true);
+                log.info("错误事件按分析策略跳过AI: eventId={}, decision={}, severity={}",
+                        event.getId(), event.getAnalysisDecision(), event.getSeverity());
+            }
 
             log.debug("日志已入库: appName={}, logId={}, errorEventId={}",
                     entry.getAppName(), entry.getLogId(), event.getId());
@@ -237,6 +263,29 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         }
     }
 
+    private KnowledgeEntry findExactConfirmedKnowledge(ErrorEvent event) {
+        if (!errorProcessingProperties.getAnalysis().isSkipKnownKnowledge()
+                || knowledgeMatcher == null
+                || event.getErrorFingerprint() == null) {
+            return null;
+        }
+        try {
+            List<KnowledgeEntry> entries = knowledgeMatcher.findSimilar(event, 1);
+            if (entries == null || entries.isEmpty()) {
+                return null;
+            }
+            KnowledgeEntry entry = entries.get(0);
+            boolean exactFingerprint = event.getErrorFingerprint().equals(entry.getErrorFingerprint());
+            boolean reusableStatus = KnowledgeEntryStatus.CONFIRMED.getCode().equals(entry.getStatus())
+                    || KnowledgeEntryStatus.WHITELIST.getCode().equals(entry.getStatus());
+            return exactFingerprint && reusableStatus ? entry : null;
+        } catch (Exception e) {
+            log.warn("知识库命中检查失败，继续按分析策略处理: eventFingerprint={}",
+                    event.getErrorFingerprint(), e);
+            return null;
+        }
+    }
+
     /**
      * 将 Agent 推送的日志条目转换为错误事件实体
      * <p>解析阶段（M4-B）字段暂留空或使用默认值</p>
@@ -300,11 +349,17 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         event.setInterfaceRef(interfaceRef);
         event.setRawStackTrace(entry.getStackTrace());
 
-        // M4-B04: 错误指纹生成（SHA-256）
-        String fingerprint = fingerprintGenerator.generate(
-                event.getAppName(), event.getErrorType(),
-                event.getClassName(), event.getMethodName(), event.getLineNumber(),
-                parsedStack.isParsed() ? parsedStack.getRootCauseClass() : null);
+        // M4-B04: 错误指纹生成（SHA-256）。APP 与 Nginx 使用不同归一化公式。
+        String fingerprint = isNginxLog
+                ? fingerprintGenerator.generateNginx(
+                        event.getAppName(), entry.getEnvironment(), event.getErrorType(),
+                        entry.getRequestUri(), entry.getHttpStatus(),
+                        entry.getUpstreamStatus(), entry.getUpstreamAddr())
+                : fingerprintGenerator.generateApplication(
+                        event.getAppName(), entry.getEnvironment(), event.getErrorType(),
+                        event.getClassName(), event.getMethodName(), event.getLineNumber(),
+                        parsedStack.isParsed() ? parsedStack.getRootCauseClass() : null,
+                        entry.getMessage());
         event.setErrorFingerprint(fingerprint);
 
         // JSON 字段序列化
@@ -328,16 +383,6 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         event.setLastTraceId(traceId);
         event.setProcessingStatus(ProcessingStatus.PARSED.getCode());
 
-        // M4-B05: 规则初判严重度与触发决策
-        boolean isNewFingerprint = true;
-        SeverityRuleEngine.SeverityResult severityResult = severityRuleEngine.evaluate(
-                event.getErrorType(), entry.getEnvironment(), isNewFingerprint);
-        event.setInitialSeverity(severityResult.severity().getCode());
-        event.setSeverity(severityResult.severity().getCode());
-        event.setSeveritySource(SeveritySource.RULE.getCode());
-        event.setSeverityReason(severityResult.reason());
-        event.setSeverityConfidence(java.math.BigDecimal.valueOf(severityResult.confidence()));
-        event.setAnalysisDecision(severityResult.analysisDecision().getCode());
         event.setSourceType(isNginxLog ? SourceType.NGINX.getCode() : SourceType.AGENT.getCode());
 
         // M4-B08: Nginx 字段解析 —— 结构化提取入口路由、upstream 等字段
@@ -346,6 +391,60 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         }
 
         return event;
+    }
+
+    private void applySeverity(ErrorEvent event, boolean isNewFingerprint) {
+        SeverityRuleEngine.SeverityResult severityResult = severityRuleEngine.evaluate(
+                new SeverityRuleEngine.SeverityContext(
+                        event.getErrorType(),
+                        event.getEnvironment(),
+                        isNewFingerprint,
+                        event.getOccurrenceCount(),
+                        event.getInterfaceRef(),
+                        event.getInterfaceRef(),
+                        event.getOwnerTeam(),
+                        event.getAppName(),
+                        null,
+                        event.getErrorMessage()));
+        event.setInitialSeverity(severityResult.initialSeverity().getCode());
+        event.setSeverity(severityResult.finalSeverity().getCode());
+        event.setFinalSeverity(severityResult.finalSeverity().getCode());
+        event.setSeveritySource(severityResult.severitySource().getCode());
+        event.setSeverityReason(severityResult.reason());
+        event.setSeverityConfidence(java.math.BigDecimal.valueOf(severityResult.confidence()));
+        event.setAnalysisDecision(severityResult.analysisDecision().getCode());
+    }
+
+    private boolean shouldTriggerAnalysis(ErrorEvent event) {
+        String decision = event.getAnalysisDecision();
+        return AnalysisDecision.MUST_ANALYZE.getCode().equals(decision)
+                || AnalysisDecision.CONDITIONAL_ANALYZE.getCode().equals(decision);
+    }
+
+    private boolean shouldUpgradeRepeatedAggregate(ErrorEvent existing) {
+        int threshold = errorProcessingProperties.getDedup().getRepeatUpgradeThreshold();
+        if (threshold <= 0 || Boolean.TRUE.equals(existing.getAnalyzed())) {
+            return false;
+        }
+        return nextOccurrenceCount(existing) >= threshold;
+    }
+
+    private int nextOccurrenceCount(ErrorEvent existing) {
+        return (existing.getOccurrenceCount() == null ? 1 : existing.getOccurrenceCount()) + 1;
+    }
+
+    private void triggerAnalysisAfterCommit(Long eventId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            analysisService.analyzeEvent(eventId);
+                        }
+                    });
+            return;
+        }
+        analysisService.analyzeEvent(eventId);
     }
 
     /**
@@ -499,7 +598,7 @@ public class ErrorLogServiceImpl implements ErrorLogService {
         java.time.LocalDateTime lastTime = existing.getLastOccurredAt() != null
                 ? existing.getLastOccurredAt() : existing.getOccurredAt();
         return java.time.Duration.between(lastTime, java.time.LocalDateTime.now())
-                .getSeconds() < DEDUP_WINDOW_SECONDS;
+                .getSeconds() < errorProcessingProperties.getDedup().getWindowSeconds();
     }
 
     /**

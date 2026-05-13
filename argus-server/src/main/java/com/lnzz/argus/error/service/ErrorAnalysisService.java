@@ -1,6 +1,7 @@
 package com.lnzz.argus.error.service;
 
 import com.lnzz.argus.error.entity.ErrorAnalysis;
+import com.lnzz.argus.error.entity.ErrorEvent;
 
 /**
  * 错误分析编排服务接口
@@ -20,6 +21,14 @@ public interface ErrorAnalysisService {
      * @param eventId 错误事件ID
      */
     void analyzeEvent(Long eventId);
+
+    /**
+     * 对指定 ErrorEvent 执行 AI 分析，并记录触发来源。
+     *
+     * @param eventId     错误事件ID
+     * @param triggerType 触发类型 AUTO/MANUAL/MANUAL_RETRY
+     */
+    void analyzeEvent(Long eventId, String triggerType);
 
     /**
      * 查询某事件的已有分析结果
@@ -47,4 +56,15 @@ public interface ErrorAnalysisService {
      */
     ErrorAnalysis supplementManual(Long eventId, String rootCause, String severity,
                                    String fixDescription, String preventionAdvice);
+
+    /**
+     * 人工调整错误事件严重度。
+     * <p>该入口预留给管理端 adjust-severity 操作，人工调整结果优先级高于规则和 AI。</p>
+     *
+     * @param eventId   错误事件ID
+     * @param severity  目标严重度 P0/P1/P2/P3
+     * @param reason    调整原因
+     * @return 调整后的事件
+     */
+    ErrorEvent adjustSeverity(Long eventId, String severity, String reason);
 }

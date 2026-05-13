@@ -21,7 +21,7 @@ public interface KnowledgeService {
     /**
      * 从 AI 分析结果自动生成知识条目草稿
      * <p>提取 ErrorEvent + ErrorAnalysis 中的错误模式、根因、修复建议等信息</p>
-     * <p>同指纹已有已确认条目时跳过（避免重复草稿）</p>
+     * <p>同指纹或同应用同类型草稿已存在时回写发生次数，避免重复草稿</p>
      *
      * @param event    错误事件
      * @param analysis AI 分析结果
@@ -120,6 +120,11 @@ public interface KnowledgeService {
      * 按错误类型查询
      */
     List<KnowledgeEntry> listByErrorType(String errorType);
+
+    /**
+     * 按应用、错误类型和状态组合查询。
+     */
+    List<KnowledgeEntry> listEntries(String status, String errorType, String appName);
 
     // ======================== M8-A04: 操作留痕 ========================
 

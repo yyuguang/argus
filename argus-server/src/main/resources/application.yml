@@ -119,24 +119,112 @@ argus:
       major-deduction: 8
       minor-deduction: 3
 
-  # dataway 日志监控
-  response-monitor:
-    dataway:
-      datasource-url: ${DATAWAY_DB_URL:jdbc:mysql://localhost:3306/dataway}
-      datasource-username: ${DATAWAY_DB_USER:root}
-      datasource-password: ${DATAWAY_DB_PASS:argus123}
-      table-name: gaea_api_history
-      poll-interval: 10000
-      batch-size: 200
+  # ==================== Phase 2: 错误处理策略 ====================
+  error:
+    dedup:
+      # 同 app + environment + fingerprint 的聚合窗口（秒）
+      window-seconds: ${ARGUS_ERROR_DEDUP_WINDOW_SECONDS:60}
+      # 预留：重复达到阈值后升级分析/通知
+      repeat-upgrade-threshold: ${ARGUS_ERROR_REPEAT_UPGRADE_THRESHOLD:10}
+    analysis:
+      # P2 已知指纹默认进入条件分析
+      analyze-p2: ${ARGUS_ERROR_ANALYZE_P2:true}
+      # P3 默认只聚合，不进入 AI
+      analyze-p3: ${ARGUS_ERROR_ANALYZE_P3:false}
+      # 业务异常默认保留条件分析能力
+      analyze-biz-exception: ${ARGUS_ERROR_ANALYZE_BIZ_EXCEPTION:true}
+      # 已确认知识/白名单精确命中时跳过 AI
+      skip-known-knowledge: ${ARGUS_ERROR_SKIP_KNOWN_KNOWLEDGE:true}
+    source:
+      # SCM 单文件源码缓存 TTL（秒），只缓存短期 Prompt 输入，不写数据库
+      cache-ttl-seconds: ${ARGUS_ERROR_SOURCE_CACHE_TTL_SECONDS:900}
+      # 单文件最大字符数
+      max-file-chars: ${ARGUS_ERROR_SOURCE_MAX_FILE_CHARS:20000}
+      # 关联上下文文件最大数量
+      max-related-files: ${ARGUS_ERROR_SOURCE_MAX_RELATED_FILES:3}
+      # 单次错误分析 Prompt 源码总字符预算
+      max-prompt-source-chars: ${ARGUS_ERROR_SOURCE_MAX_PROMPT_CHARS:30000}
+    summary:
+      hourly-cron: ${ARGUS_ERROR_SUMMARY_HOURLY_CRON:0 0 * * * *}
+      daily-cron: ${ARGUS_ERROR_SUMMARY_DAILY_CRON:0 10 0 * * *}
+      weekly-cron: ${ARGUS_ERROR_SUMMARY_WEEKLY_CRON:0 30 0 * * MON}
+    severity-policy:
+      # 错误类型默认等级矩阵。Nginx 502/503/504 默认 P1，BizException 默认 P3。
+      default-levels:
+        SQL_EXCEPTION: P1
+        CONNECTION_REFUSED: P1
+        NGINX_502: P1
+        NGINX_503: P1
+        NGINX_504: P1
+        NGINX_499: P2
+        NGINX_5XX: P1
+        NGINX_4XX: P3
+        TIMEOUT: P2
+        NULL_POINTER: P2
+        CLASS_CAST: P2
+        INDEX_OUT_OF_BOUNDS: P2
+        IO_EXCEPTION: P2
+        HTTP_ERROR: P2
+        MQ_ERROR: P2
+        SERIALIZATION_ERROR: P2
+        BIZ_EXCEPTION: P3
+        UNKNOWN: P2
+      environment-upgrade:
+        enabled: true
+        environments:
+          - PROD
+          - PRODUCTION
+        error-types:
+          - SQL_EXCEPTION
+          - CONNECTION_REFUSED
+          - TIMEOUT
+        from: P2
+        to: P1
+      frequency-upgrade:
+        enabled: true
+        threshold: ${ARGUS_ERROR_SEVERITY_FREQ_THRESHOLD:10}
+        to: P2
+        high-threshold: ${ARGUS_ERROR_SEVERITY_FREQ_HIGH_THRESHOLD:50}
+        high-to: P1
+      core-link-upgrade:
+        enabled: true
+        interface-refs: []
+        request-uris: []
+        owner-teams: []
+        app-names: []
+        to: P1
+      data-consistency-upgrade:
+        enabled: true
+        keywords:
+          - amount
+          - balance
+          - stock
+          - inventory
+          - payment
+          - settlement
+          - 金额
+          - 余额
+          - 库存
+          - 支付
+          - 结算
+        to: P1
+      knowledge-downgrade:
+        enabled: true
+        whitelist-statuses:
+          - WHITELIST
+        low-risk-statuses:
+          - KNOWN_LOW_RISK
+          - LOW_RISK
+        whitelist-to: P3
+        low-risk-to: P3
+      ai-calibration:
+        protect-high-severity-downgrade: true
 
   # ==================== M7: 通知配置 ====================
   notification:
     enabled: true
     default-channel: wechat
     wechat:
-      webhooks:
-        default: ${WECHAT_WEBHOOK_DEFAULT:}
-        critical: ${WECHAT_WEBHOOK_DEFAULT:}
       rate-limit:
         same-type-interval: 60
         max-per-hour: 30

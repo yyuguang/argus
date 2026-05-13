@@ -1,8 +1,13 @@
 package com.lnzz.argus.error.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.lnzz.argus.error.ai.ErrorAnalysisEngine;
 import com.lnzz.argus.error.ai.ErrorAnalysisPromptBuilder;
+import com.lnzz.argus.config.ErrorProcessingProperties;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
+import com.lnzz.argus.error.entity.ErrorAnalysisTask;
+import com.lnzz.argus.error.mapper.ErrorAnalysisTaskMapper;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.mapper.ErrorAnalysisMapper;
 import com.lnzz.argus.error.mapper.ErrorEventMapper;
@@ -16,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.document.Document;
@@ -39,6 +45,8 @@ class ErrorAnalysisServiceTest {
     @Mock
     private ErrorAnalysisMapper analysisMapper;
     @Mock
+    private ErrorAnalysisTaskMapper analysisTaskMapper;
+    @Mock
     private ErrorEventMapper eventMapper;
     @Mock
     private ErrorAnalysisEngine analysisEngine;
@@ -59,8 +67,15 @@ class ErrorAnalysisServiceTest {
 
     @BeforeEach
     void setUp() {
+        if (TableInfoHelper.getTableInfo(ErrorEvent.class) == null) {
+            TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), ErrorEvent.class);
+        }
+        if (TableInfoHelper.getTableInfo(ErrorAnalysisTask.class) == null) {
+            TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), ErrorAnalysisTask.class);
+        }
         service = new ErrorAnalysisServiceImpl(
                 analysisMapper,
+                analysisTaskMapper,
                 eventMapper,
                 analysisEngine,
                 promptBuilder,
@@ -68,7 +83,8 @@ class ErrorAnalysisServiceTest {
                 notificationService,
                 knowledgeService,
                 knowledgeMatcher,
-                vectorKnowledgeService
+                vectorKnowledgeService,
+                new ErrorProcessingProperties()
         );
         ReflectionTestUtils.setField(service, "vectorEnabled", true);
         ReflectionTestUtils.setField(service, "errorSearchTopk", 5);
@@ -152,6 +168,84 @@ class ErrorAnalysisServiceTest {
 
         assertNotNull(historyCases);
         assertTrue(historyCases.stream().anyMatch(item -> "历史兜底案例".equals(item.getRootCause())));
+    }
+
+    @Test
+    @DisplayName("AI 不允许直接将 P1 降级为 P3")
+    void aiCalibrationBlocksHighSeverityDowngrade() {
+        ErrorEvent event = createEvent();
+        event.setSeverity("P1");
+        event.setSeveritySource("RULE");
+        ErrorAnalysis analysis = new ErrorAnalysis();
+        analysis.setFinalSeverity("P3");
+        analysis.setRootCause("历史低风险案例相似");
+        analysis.setConfidence(BigDecimal.valueOf(0.72));
+
+        ReflectionTestUtils.invokeMethod(service, "updateEventSeverity", event, analysis);
+
+        assertEquals("P1", event.getFinalSeverity());
+        assertTrue(event.getSeverityReason().contains("需人工确认"));
+        verify(eventMapper).update(org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("AI 可以将 P2 升级为 P1")
+    void aiCalibrationAllowsUpgrade() {
+        ErrorEvent event = createEvent();
+        event.setSeverity("P2");
+        ErrorAnalysis analysis = new ErrorAnalysis();
+        analysis.setFinalSeverity("P1");
+        analysis.setRootCause("支付链路超时影响交易");
+        analysis.setConfidence(BigDecimal.valueOf(0.88));
+
+        ReflectionTestUtils.invokeMethod(service, "updateEventSeverity", event, analysis);
+
+        assertEquals("P1", event.getSeverity());
+        assertEquals("P1", event.getFinalSeverity());
+        assertEquals("AI", event.getSeveritySource());
+        assertTrue(event.getSeverityReason().contains("AI校准"));
+    }
+
+    @Test
+    @DisplayName("人工调整严重度最终生效")
+    void manualAdjustSeverityWins() {
+        ErrorEvent event = createEvent();
+        event.setSeverity("P2");
+        when(eventMapper.selectById(1L)).thenReturn(event);
+
+        ErrorEvent adjusted = service.adjustSeverity(1L, "P0", "生产支付不可用");
+
+        assertEquals("P0", adjusted.getSeverity());
+        assertEquals("P0", adjusted.getFinalSeverity());
+        assertEquals("MANUAL", adjusted.getSeveritySource());
+        assertTrue(adjusted.getSeverityReason().contains("生产支付不可用"));
+    }
+
+    @Test
+    @DisplayName("执行分析时创建任务并在成功后标记完成")
+    void analyzeEventCreatesDoneTask() {
+        ErrorEvent event = createEvent();
+        event.setAnalyzed(false);
+        ErrorAnalysis analysis = new ErrorAnalysis();
+        analysis.setId(10L);
+        analysis.setFinalSeverity("P1");
+        analysis.setRootCause("连接池耗尽");
+        analysis.setConfidence(BigDecimal.valueOf(0.86));
+        analysis.setAiModel("deepseek-chat");
+
+        when(eventMapper.selectById(1L)).thenReturn(event);
+        when(sourceCodeLocator.locate(event)).thenReturn(SourceCodeLocator.SourceLocation.notFound("未配置源码映射"));
+        when(promptBuilder.buildAnalysisPrompt(org.mockito.ArgumentMatchers.eq(event),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList())).thenReturn("prompt");
+        when(analysisEngine.analyze("prompt", event)).thenReturn(analysis);
+
+        service.analyzeEvent(1L, "MANUAL_RETRY");
+
+        verify(analysisTaskMapper).insert(org.mockito.ArgumentMatchers.any(ErrorAnalysisTask.class));
+        verify(analysisTaskMapper, org.mockito.Mockito.atLeastOnce())
+                .update(org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        verify(analysisMapper).insert(analysis);
+        verify(notificationService).sendErrorAlert(event, analysis);
     }
 
     private ErrorEvent createEvent() {

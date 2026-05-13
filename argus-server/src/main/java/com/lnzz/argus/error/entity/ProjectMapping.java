@@ -8,7 +8,10 @@ import lombok.EqualsAndHashCode;
 import java.io.Serial;
 
 /**
- * 应用-SCM项目映射实体（M5-A01）
+ * 应用-SCM项目映射实体（M5-A01）。
+ * <p>
+ * 一条记录表示一个服务级 appName 到 SCM 仓库源码根的映射；同一个 SCM 仓库可以绑定多个微服务 appName。
+ * </p>
  *
  * @author lnzz
  * @since 1.0.0
@@ -30,7 +33,7 @@ public class ProjectMapping extends BaseEntity {
     /** 仓库/项目ID */
     private Long scmProjectId;
 
-    /** 源码根目录 */
+    /** 服务源码根目录，例如 order-service/src/main/java */
     private String sourceRoot;
 
     /** 基础包名 */

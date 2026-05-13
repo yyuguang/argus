@@ -1,5 +1,8 @@
 package com.lnzz.argus.error.parse;
 
+import com.lnzz.argus.common.enums.AnalysisDecision;
+import com.lnzz.argus.common.enums.SeverityLevel;
+import com.lnzz.argus.config.ErrorProcessingProperties;
 import com.lnzz.argus.error.parse.SeverityRuleEngine.SeverityResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -147,5 +150,97 @@ class SeverityRuleEngineTest {
     void defaultConfidenceIs0_80() {
         SeverityResult result = engine.evaluate("TIMEOUT", "DEV", false);
         assertEquals(0.80, result.confidence(), 0.001);
+    }
+
+    @Test
+    @DisplayName("配置关闭 P2 分析时回落为只聚合")
+    void disabledP2AnalysisAggregatesOnly() {
+        ErrorProcessingProperties properties = new ErrorProcessingProperties();
+        properties.getAnalysis().setAnalyzeP2(false);
+        SeverityRuleEngine configuredEngine = new SeverityRuleEngine(properties);
+
+        SeverityResult result = configuredEngine.evaluate("NULL_POINTER", "DEV", false);
+
+        assertEquals(SeverityLevel.P2, result.severity());
+        assertEquals(AnalysisDecision.AGGREGATE_ONLY, result.analysisDecision());
+    }
+
+    @Test
+    @DisplayName("高频 BizException 可从 P3 升级为 P2")
+    void highFrequencyBizExceptionUpgrades() {
+        SeverityResult result = engine.evaluate(new SeverityRuleEngine.SeverityContext(
+                "BIZ_EXCEPTION", "DEV", false,
+                12, "/api/order/create", "/api/order/create",
+                "order-team", "order-service", null, "参数重复提交"));
+
+        assertEquals(SeverityLevel.P2, result.severity());
+        assertEquals(SeverityLevel.P3, result.initialSeverity());
+        assertTrue(result.reason().contains("重复出现12次"));
+    }
+
+    @Test
+    @DisplayName("核心链路命中可将业务异常升级为 P1")
+    void coreLinkBizExceptionUpgradesToP1() {
+        ErrorProcessingProperties properties = new ErrorProcessingProperties();
+        properties.getSeverityPolicy().getCoreLinkUpgrade().getRequestUris().add("/api/pay");
+        SeverityRuleEngine configuredEngine = new SeverityRuleEngine(properties);
+
+        SeverityResult result = configuredEngine.evaluate(new SeverityRuleEngine.SeverityContext(
+                "BIZ_EXCEPTION", "DEV", false,
+                1, "/api/pay/submit", "/api/pay/submit",
+                "pay-team", "pay-service", null, "支付失败"));
+
+        assertEquals(SeverityLevel.P1, result.severity());
+        assertTrue(result.reason().contains("核心链路"));
+    }
+
+    @Test
+    @DisplayName("命中白名单知识可降级为 P3")
+    void whitelistKnowledgeDowngradesToP3() {
+        SeverityResult result = engine.evaluate(new SeverityRuleEngine.SeverityContext(
+                "NGINX_502", "PROD", false,
+                1, "/health", "/health",
+                "platform", "gateway", "WHITELIST", "探活偶发 502"));
+
+        assertEquals(SeverityLevel.P3, result.severity());
+        assertTrue(result.reason().contains("白名单"));
+    }
+
+    @Test
+    @DisplayName("UNKNOWN 新指纹即使命中低风险知识也必须高优分析")
+    void unknownNewFingerprintIsProtectedFromKnowledgeDowngrade() {
+        SeverityResult result = engine.evaluate(new SeverityRuleEngine.SeverityContext(
+                "UNKNOWN", "DEV", true,
+                1, "/api/unknown", "/api/unknown",
+                "platform", "gateway", "KNOWN_LOW_RISK", "未识别异常"));
+
+        assertEquals(SeverityLevel.P1, result.severity());
+        assertEquals(AnalysisDecision.MUST_ANALYZE, result.analysisDecision());
+        assertTrue(result.reason().contains("未知新异常"));
+    }
+
+    @Test
+    @DisplayName("数据一致性关键词可升级为 P1")
+    void dataConsistencyRiskUpgradesToP1() {
+        SeverityResult result = engine.evaluate(new SeverityRuleEngine.SeverityContext(
+                "BIZ_EXCEPTION", "DEV", false,
+                1, "/api/stock/deduct", "/api/stock/deduct",
+                "inventory-team", "inventory-service", null, "库存扣减失败"));
+
+        assertEquals(SeverityLevel.P1, result.severity());
+        assertTrue(result.reason().contains("数据一致性"));
+    }
+
+    @Test
+    @DisplayName("配置默认等级矩阵可覆盖错误类型默认等级")
+    void configuredDefaultSeverityOverridesMatrix() {
+        ErrorProcessingProperties properties = new ErrorProcessingProperties();
+        properties.getSeverityPolicy().getDefaultLevels().put("BIZ_EXCEPTION", "P2");
+        SeverityRuleEngine configuredEngine = new SeverityRuleEngine(properties);
+
+        SeverityResult result = configuredEngine.evaluate("BIZ_EXCEPTION", "DEV", false);
+
+        assertEquals(SeverityLevel.P2, result.initialSeverity());
+        assertEquals(SeverityLevel.P2, result.severity());
     }
 }

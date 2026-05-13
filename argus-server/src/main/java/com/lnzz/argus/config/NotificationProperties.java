@@ -44,7 +44,6 @@ public class NotificationProperties {
 
     @Data
     public static class WechatConfig {
-        private Map<String, String> webhooks;
         private RateLimit rateLimit = new RateLimit();
     }
 

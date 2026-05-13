@@ -1,5 +1,6 @@
 package com.lnzz.argus.error.parse;
 
+import com.lnzz.argus.common.enums.ErrorType;
 import com.lnzz.argus.error.model.ErrorLogEntry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

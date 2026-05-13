@@ -8,6 +8,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URI;
 import java.util.Map;
 
 /**
@@ -37,7 +38,7 @@ public class WechatWebhookClient {
     public boolean sendMarkdown(String channel, String content) {
         String webhookUrl = getWebhookUrl(channel, null);
         if (webhookUrl == null) {
-            log.error("企微通道不存在: channel={}", channel);
+            log.warn("企微通道未配置或未启用: channel={}", channel);
             return false;
         }
 
@@ -66,7 +67,7 @@ public class WechatWebhookClient {
     public boolean sendMarkdown(String channel, String content, String customWebhookUrl) {
         String webhookUrl = getWebhookUrl(channel, customWebhookUrl);
         if (webhookUrl == null) {
-            log.error("企微通道不存在: channel={}", channel);
+            log.warn("企微通道未配置或未启用: channel={}", channel);
             return false;
         }
 
@@ -94,7 +95,7 @@ public class WechatWebhookClient {
     public boolean sendText(String channel, String content, java.util.List<String> mentionUsers) {
         String webhookUrl = getWebhookUrl(channel, null);
         if (webhookUrl == null) {
-            log.error("企微通道不存在: channel={}", channel);
+            log.warn("企微通道未配置或未启用: channel={}", channel);
             return false;
         }
 
@@ -133,16 +134,34 @@ public class WechatWebhookClient {
 
     String getWebhookUrl(String channel, String customWebhookUrl) {
         if (customWebhookUrl != null && !customWebhookUrl.isBlank()) {
-            return customWebhookUrl;
+            return normalizeWebhook(customWebhookUrl);
         }
-        String envWebhookUrl = System.getenv("WECHAT_WEBHOOK_DEFAULT");
-        if (envWebhookUrl != null && !envWebhookUrl.isBlank()) {
-            return envWebhookUrl;
-        }
-        Map<String, String> webhooks = properties.getWechat().getWebhooks();
-        if (webhooks == null) {
+        return null;
+    }
+
+    private String normalizeWebhook(String webhookUrl) {
+        if (webhookUrl == null || webhookUrl.isBlank()) {
             return null;
         }
-        return webhooks.getOrDefault(channel, webhooks.get("default"));
+        String trimmed = webhookUrl.trim();
+        try {
+            URI uri = URI.create(trimmed);
+            if (!uri.isAbsolute() || uri.getScheme() == null
+                    || (!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme()))) {
+                log.warn("企微 webhook 地址非法，已跳过发送: {}", maskWebhook(trimmed));
+                return null;
+            }
+            return trimmed;
+        } catch (IllegalArgumentException e) {
+            log.warn("企微 webhook 地址解析失败，已跳过发送: {}", maskWebhook(trimmed));
+            return null;
+        }
+    }
+
+    private String maskWebhook(String webhookUrl) {
+        if (webhookUrl == null || webhookUrl.length() <= 16) {
+            return "****";
+        }
+        return webhookUrl.substring(0, 12) + "****";
     }
 }
