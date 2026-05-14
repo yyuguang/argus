@@ -1,13 +1,20 @@
 package com.lnzz.argus.gitlab.webhook;
 
 import com.lnzz.argus.common.result.Result;
-import com.lnzz.argus.config.GitLabProperties;
-import com.lnzz.argus.gitlab.model.MergeRequestEvent;
+import com.lnzz.argus.review.service.ReviewTriggerRuleEvaluator;
 import com.lnzz.argus.review.service.ReviewService;
+import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.model.PullRequestEvent;
+import com.lnzz.argus.scm.service.ScmConfigService;
+import com.lnzz.argus.scm.service.ScmPlatformService;
+import com.lnzz.argus.scm.service.ScmPlatformServiceFactory;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Enumeration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -23,43 +30,58 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class WebhookController {
 
-    private final GitLabProperties gitLabProperties;
-    private final WebhookEventParser eventParser;
+    private final ScmPlatformServiceFactory scmPlatformServiceFactory;
+    private final ScmConfigService scmConfigService;
+    private final ReviewTriggerRuleEvaluator reviewTriggerRuleEvaluator;
     private final ReviewService reviewService;
 
     /**
-     * 接收 GitLab Webhook
+     * 接收 SCM Webhook
      *
-     * @param gitlabToken Webhook 签名 Token
+     * @param provider SCM 平台
      * @param payload     原始请求体
      * @return 处理结果
      */
-    @PostMapping("/gitlab")
-    public Result<Map<String, Object>> receiveGitLabWebhook(
-            @RequestHeader(value = "X-Gitlab-Token", required = false) String gitlabToken,
+    @PostMapping("/{provider}")
+    public Result<Map<String, Object>> receiveWebhook(
+            @PathVariable String provider,
+            HttpServletRequest request,
             @RequestBody String payload) {
+        ScmPlatformService scmService = scmPlatformServiceFactory.getRequired(provider);
+        Map<String, String> headers = extractHeaders(request);
 
-        // M1-03: 签名校验
-        if (!verifyWebhookToken(gitlabToken)) {
-            log.warn("Webhook签名校验失败");
-            return Result.fail(401, "Webhook Token 无效");
-        }
-
-        // M1-01: 解析 MR 事件
-        MergeRequestEvent event = eventParser.parseMergeRequestEvent(payload);
+        PullRequestEvent event = scmService.parseWebhookEvent(headers, payload);
         if (event == null) {
-            return Result.success("非MR事件，已忽略", Map.of("action", "ignored"));
+            return Result.success("非PR/MR事件，已忽略", Map.of("action", "ignored"));
         }
 
-        // 仅处理 dev → test 的 open/update 事件
-        if (!event.isReviewable()) {
-            log.info("非评审目标MR，忽略: {}→{}, state={}", event.getSourceBranch(), event.getTargetBranch(), event.getMrState());
-            return Result.success("非评审目标MR，已忽略", Map.of("action", "skipped"));
+        ScmConfig config = scmConfigService.resolveConfig(
+                event.getScmProvider(), event.getProjectId(), event.getRepoOwner(), event.getRepoName());
+        if (config == null) {
+            log.warn("未找到匹配的 SCM 配置: provider={}, projectId={}, repo={}/{}",
+                    event.getScmProvider(), event.getProjectId(), event.getRepoOwner(), event.getRepoName());
+            return Result.fail(404, "未找到匹配的 SCM 配置");
+        }
+
+        if (!scmService.verifyWebhookSignature(config, headers, payload)) {
+            log.warn("Webhook签名校验失败: provider={}, project={}", provider, event.getProjectName());
+            return Result.fail(401, "Webhook 签名无效");
+        }
+
+        ReviewTriggerRuleEvaluator.TriggerDecision decision = reviewTriggerRuleEvaluator.evaluate(event, config);
+        if (!decision.shouldReview()) {
+            log.info("PR/MR 未命中评审规则，忽略: provider={}, {}→{}, state={}, reason={}",
+                    provider, event.getSourceBranch(), event.getTargetBranch(), event.getMrState(), decision.reason());
+            return Result.success("非评审目标PR/MR，已忽略", Map.of(
+                    "action", "skipped",
+                    "reason", decision.reason()
+            ));
         }
 
         // M1-05: 异步触发评审
-        Long taskId = reviewService.triggerReview(event);
-        log.info("评审任务已创建: taskId={}, project={}, mrIid={}", taskId, event.getProjectName(), event.getMrIid());
+        Long taskId = reviewService.triggerReview(event, config);
+        log.info("评审任务已创建: provider={}, taskId={}, project={}, mrIid={}",
+                provider, taskId, event.getProjectName(), event.getMrIid());
 
         return Result.success("评审任务已创建", Map.of(
                 "taskId", taskId,
@@ -67,14 +89,13 @@ public class WebhookController {
         ));
     }
 
-    /**
-     * M1-03: 校验 Webhook Token
-     */
-    private boolean verifyWebhookToken(String token) {
-        String expected = gitLabProperties.getWebhookSecret();
-        if (expected == null || expected.isBlank()) {
-            return true;
+    private Map<String, String> extractHeaders(HttpServletRequest request) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        Enumeration<String> names = request.getHeaderNames();
+        while (names != null && names.hasMoreElements()) {
+            String name = names.nextElement();
+            headers.put(name.toLowerCase(), request.getHeader(name));
         }
-        return expected.equals(token);
+        return headers;
     }
 }

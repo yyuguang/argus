@@ -66,7 +66,7 @@ public class GitLabApiClient {
             return result;
         } catch (RestClientException e) {
             log.error("获取MR Diff失败, projectId={}, mrIid={}", projectId, mrIid, e);
-            throw new BizException(ResultCode.GITLAB_ERROR, "获取MR Diff失败: " + e.getMessage());
+            throw new BizException(ResultCode.SCM_ERROR, "获取MR Diff失败: " + e.getMessage());
         }
     }
 
@@ -132,7 +132,7 @@ public class GitLabApiClient {
             return noteId;
         } catch (RestClientException e) {
             log.error("添加MR评论失败, projectId={}, mrIid={}", projectId, mrIid, e);
-            throw new BizException(ResultCode.GITLAB_ERROR, "添加MR评论失败: " + e.getMessage());
+            throw new BizException(ResultCode.SCM_ERROR, "添加MR评论失败: " + e.getMessage());
         }
     }
 

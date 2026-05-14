@@ -1,6 +1,6 @@
 package com.lnzz.argus.review.parser;
 
-import com.lnzz.argus.gitlab.model.DiffFile;
+import com.lnzz.argus.scm.model.DiffFile;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 

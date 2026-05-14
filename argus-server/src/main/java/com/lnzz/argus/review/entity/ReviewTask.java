@@ -21,20 +21,35 @@ public class ReviewTask extends BaseEntity {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** GitLab项目ID */
+    /** SCM 平台标识 */
+    private String scmProvider;
+
+    /** SCM 配置ID */
+    private Long scmConfigId;
+
+    /** 仓库/项目ID */
     private Long projectId;
 
-    /** 项目名称 */
+    /** 仓库/项目名称 */
     private String projectName;
 
-    /** MR编号 */
+    /** 仓库归属 owner/group */
+    private String repoOwner;
+
+    /** 仓库名称 */
+    private String repoName;
+
+    /** PR/MR 编号 */
     private Long mrIid;
 
-    /** MR标题 */
+    /** PR/MR 标题 */
     private String mrTitle;
 
-    /** MR链接 */
+    /** PR/MR 链接 */
     private String mrUrl;
+
+    /** 提交者唯一ID */
+    private String authorId;
 
     /** 提交者 */
     private String authorName;
@@ -87,8 +102,8 @@ public class ReviewTask extends BaseEntity {
     /** 评审总结 */
     private String summary;
 
-    /** GitLab评论ID */
-    private Long gitlabCommentId;
+    /** SCM 评论ID */
+    private Long scmCommentId;
 
     /** 是否已通知 */
     private Boolean notified;
