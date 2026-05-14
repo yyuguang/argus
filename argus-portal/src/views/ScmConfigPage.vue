@@ -1074,12 +1074,17 @@ function validatePayload(payload) {
 }
 
 function isValidWebhook(value) {
+  if (!value || !String(value).trim()) return false
   try {
-    const url = new URL(value)
+    const url = new URL(String(value).trim())
     return ['http:', 'https:'].includes(url.protocol)
   } catch {
     return false
   }
+}
+
+function isMaskedSecret(value) {
+  return Boolean(value && String(value).includes('********'))
 }
 
 function validateJsonField(value, label) {
@@ -1212,6 +1217,9 @@ function notifyState(row) {
   }
   if (!row.wechatNotifyWebhook) {
     return { status: 'missing', label: '未配置', description: '缺少 SCM Webhook', type: 'warning' }
+  }
+  if (isMaskedSecret(row.wechatNotifyWebhook)) {
+    return { status: 'ready', label: '可发送', description: '已配置 SCM Webhook', type: 'success' }
   }
   if (!isValidWebhook(row.wechatNotifyWebhook)) {
     return { status: 'invalid', label: '配置异常', description: 'Webhook URL 非法', type: 'danger' }
