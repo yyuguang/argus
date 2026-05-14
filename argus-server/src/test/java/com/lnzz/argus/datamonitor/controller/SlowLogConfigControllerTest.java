@@ -33,7 +33,7 @@ class SlowLogConfigControllerTest {
     void updateDelegatesToService() {
         SlowLogConfigService service = mock(SlowLogConfigService.class);
         SlowLogConfigRequest request = new SlowLogConfigRequest(true, "FILE_TAIL",
-                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1000L, true, 0L);
+                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1000L, true, 60, 0L);
         when(service.saveOrUpdate(1L, 2L, 100L, request)).thenReturn(response());
         SlowLogConfigController controller = new SlowLogConfigController(service);
 
@@ -45,6 +45,6 @@ class SlowLogConfigControllerTest {
 
     private SlowLogConfigResponse response() {
         return new SlowLogConfigResponse(10L, 100L, true, "FILE_TAIL",
-                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1000L, true, 0L, null);
+                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1000L, true, 60, 0L, null);
     }
 }

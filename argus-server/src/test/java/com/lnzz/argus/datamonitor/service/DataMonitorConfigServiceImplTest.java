@@ -59,6 +59,10 @@ class DataMonitorConfigServiceImplTest {
                 "OMS研发组",
                 "zhangsan",
                 "scm_config",
+                30,
+                30,
+                300,
+                60,
                 "生产 OMS 数据库监控"
         );
 
@@ -80,7 +84,8 @@ class DataMonitorConfigServiceImplTest {
 
         BizException exception = assertThrows(BizException.class,
                 () -> fixture.service.saveOrUpdate(1L, 2L,
-                        new DataMonitorConfigUpdateRequest(true, null, null, null, null)));
+                        new DataMonitorConfigUpdateRequest(true, null, null, null,
+                                null, null, null, null, null)));
 
         assertEquals("应用映射不属于当前 SCM 配置", exception.getMessage());
         verify(fixture.configMapper, never()).insert(any(DataMonitorConfig.class));

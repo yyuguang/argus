@@ -42,72 +42,15 @@
         </el-tab-pane>
 
         <el-tab-pane label="连接池" name="pools">
-          <el-table :data="poolRisks" v-loading="loading" border>
-            <el-table-column label="应用 / 实例" min-width="210" fixed>
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.appName || '-' }}</div>
-                <div class="cell-sub">{{ row.displayPoolName }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="连接池类型" width="140">
-              <template #default="{ row }">
-                <el-tag effect="light">{{ row.poolType || '-' }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="活跃 / 最大" min-width="150">
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.displayActiveConnections }} / {{ row.displayMaxConnections }}</div>
-                <div class="cell-sub">使用率 {{ row.displayUsagePercent }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="等待 / 超时" min-width="150">
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.displayWaitingThreads }} waiting</div>
-                <div class="cell-sub">{{ row.displayTimeoutCount }} timeout</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="风险" min-width="280">
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.displayRiskLevel }}</div>
-                <div class="cell-sub">{{ row.displayRiskReason }}</div>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!loading && !poolRisks.length" description="暂无连接池风险" />
+          <PoolRiskTable :rows="poolRisks" :loading="loading" />
         </el-tab-pane>
 
         <el-tab-pane label="接口日志表质量" name="logQuality">
-          <el-table :data="logQualityIssues" v-loading="loading" border>
-            <el-table-column label="应用 / 表" min-width="230" fixed>
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.appName || '-' }}</div>
-                <div class="cell-sub">{{ row.displayTableName }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="问题类型" min-width="180">
-              <template #default="{ row }">
-                <el-tag :type="row.displayIssueTagType" effect="light">{{ row.displayIssueType }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="质量指标" min-width="220">
-              <template #default="{ row }">
-                <div class="cell-main">空响应 {{ row.displayEmptyResponseRate }}</div>
-                <div class="cell-sub">缺 requestId {{ row.displayMissingRequestIdRate }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="说明" min-width="320">
-              <template #default="{ row }">
-                <div class="cell-main">{{ row.displaySummary }}</div>
-                <div class="cell-sub">{{ row.displaySuggestion }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" fixed="right" width="120">
-              <template #default="{ row }">
-                <el-button link type="warning" @click.stop="openActionDialog('logIssueIgnore', row)">忽略</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!loading && !logQualityIssues.length" description="暂无接口日志质量问题" />
+          <LogQualityIssueTable
+            :rows="logQualityIssues"
+            :loading="loading"
+            @ignore="openActionDialog('logIssueIgnore', $event)"
+          />
         </el-tab-pane>
       </el-tabs>
     </section>
@@ -137,6 +80,8 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import DataMonitorFilterBar from '../components/data-monitor/DataMonitorFilterBar.vue'
 import DataMonitorStatCards from '../components/data-monitor/DataMonitorStatCards.vue'
+import LogQualityIssueTable from '../components/data-monitor/LogQualityIssueTable.vue'
+import PoolRiskTable from '../components/data-monitor/PoolRiskTable.vue'
 import SlowSqlDetailDrawer from '../components/data-monitor/SlowSqlDetailDrawer.vue'
 import SlowSqlTable from '../components/data-monitor/SlowSqlTable.vue'
 import {

@@ -61,7 +61,7 @@ class InterfaceLogTableConfigServiceImplTest {
     private InterfaceLogTableConfigRequest request(String tableName) {
         return new InterfaceLogTableConfigRequest(100L, "OMS接口日志", tableName, "id", "api_code",
                 "start_time", "end_time", "response_body", "response_code", "request_id", "trace_id",
-                "ID_INCREMENT", true,
+                "ID_INCREMENT", 300, true,
                 new LogQualityRules(Set.of("api_code", "start_time", "end_time", "response_body"),
                         10, 5, 1, 512, 1000000L, Set.of("200", "0")),
                 null);

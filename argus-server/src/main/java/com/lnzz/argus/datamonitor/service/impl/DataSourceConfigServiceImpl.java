@@ -111,6 +111,36 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
                 request.jdbcUrl().trim(), request.username().trim(), request.password()));
     }
 
+    @Override
+    public DataSourceConnectivityTester.DataSourceTestResult testExisting(Long scmConfigId, Long mappingId,
+                                                                          Long datasourceId,
+                                                                          ExistingDataSourceTestRequest request) {
+        requireMonitorConfig(scmConfigId, mappingId);
+        DataSourceConfig datasource = requireDatasource(mappingId, datasourceId);
+        String jdbcUrl = StringUtils.hasText(request == null ? null : request.jdbcUrl())
+                ? request.jdbcUrl().trim()
+                : datasource.getJdbcUrl();
+        String username = StringUtils.hasText(request == null ? null : request.username())
+                ? request.username().trim()
+                : datasource.getUsername();
+        String password = StringUtils.hasText(request == null ? null : request.password())
+                ? request.password()
+                : null;
+        if (!StringUtils.hasText(password) && StringUtils.hasText(datasource.getPasswordSecret())) {
+            try {
+                password = secretCodec.decrypt(datasource.getPasswordSecret());
+            } catch (IllegalStateException ex) {
+                throw new BizException(ResultCode.PARAM_ERROR, "已保存数据源密码无法解密，请重新输入密码后测试或保存");
+            }
+        }
+        if (!StringUtils.hasText(jdbcUrl) || !StringUtils.hasText(username) || !StringUtils.hasText(password)) {
+            throw new BizException(ResultCode.PARAM_ERROR, "已有数据源缺少 jdbcUrl、username 或 passwordSecret");
+        }
+        validateMysqlJdbcUrl(jdbcUrl);
+        return connectivityTester.test(new DataSourceConnectivityTester.DataSourceConnectionRequest(
+                jdbcUrl, username, password));
+    }
+
     private DataMonitorConfig requireMonitorConfig(Long scmConfigId, Long mappingId) {
         requireMappingBelongsToScm(scmConfigId, mappingId);
         DataMonitorConfig config = dataMonitorConfigMapper.selectOne(new LambdaQueryWrapper<DataMonitorConfig>()
@@ -177,6 +207,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
             validateMysqlJdbcUrl(request.jdbcUrl());
         }
         validateThresholds(request.thresholds());
+        validatePositive(request.runtimeCollectIntervalSeconds(), "数据库运行态采集间隔");
+        validatePositive(request.poolMetricPushIntervalSeconds(), "连接池指标推送间隔");
     }
 
     private void validateThresholds(ThresholdConfig thresholds) {
@@ -248,6 +280,10 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         }
         config.setReadonly(Boolean.TRUE);
         config.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
+        config.setRuntimeCollectIntervalSeconds(integerOrDefault(request.runtimeCollectIntervalSeconds(),
+                integerOrDefault(config.getRuntimeCollectIntervalSeconds(), 30)));
+        config.setPoolMetricPushIntervalSeconds(integerOrDefault(request.poolMetricPushIntervalSeconds(),
+                integerOrDefault(config.getPoolMetricPushIntervalSeconds(), 30)));
         applyCollectOptions(config, request.collectOptions());
         config.setThresholdConfig(request.thresholds() == null ? config.getThresholdConfig()
                 : JSON.toJSONString(request.thresholds()));
@@ -269,6 +305,10 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
     }
 
     private Boolean valueOrDefault(Boolean value, Boolean defaultValue) {
+        return value != null ? value : defaultValue;
+    }
+
+    private Integer integerOrDefault(Integer value, Integer defaultValue) {
         return value != null ? value : defaultValue;
     }
 
@@ -308,6 +348,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
                 config.getCollectGlobalStatus(),
                 config.getExplainEnabled(),
                 config.getFullSqlCollectEnabled(),
+                config.getRuntimeCollectIntervalSeconds(),
+                config.getPoolMetricPushIntervalSeconds(),
                 parseThresholds(config.getThresholdConfig())
         );
     }

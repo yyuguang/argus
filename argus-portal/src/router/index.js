@@ -7,6 +7,7 @@ import ScmConfigPage from '../views/ScmConfigPage.vue'
 import PersonalQualityPage from '../views/PersonalQualityPage.vue'
 import ErrorDiagnosisPage from '../views/ErrorDiagnosisPage.vue'
 import DataMonitorPage from '../views/DataMonitorPage.vue'
+import DataMonitorConfigPage from '../views/DataMonitorConfigPage.vue'
 import WebhookGuidePage from '../views/WebhookGuidePage.vue'
 import SettingsPage from '../views/SettingsPage.vue'
 
@@ -81,6 +82,15 @@ const router = createRouter({
       component: DataMonitorPage,
       meta: {
         title: '数据监控',
+        section: '质量治理',
+      },
+    },
+    {
+      path: '/quality/data-monitor/configs',
+      name: 'data-monitor-configs',
+      component: DataMonitorConfigPage,
+      meta: {
+        title: '数据监控配置',
         section: '质量治理',
       },
     },

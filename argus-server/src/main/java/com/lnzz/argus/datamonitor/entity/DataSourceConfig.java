@@ -76,6 +76,12 @@ public class DataSourceConfig extends BaseEntity {
     /** 是否采集完整 SQL */
     private Boolean fullSqlCollectEnabled;
 
+    /** 数据库运行态采集间隔秒数 */
+    private Integer runtimeCollectIntervalSeconds;
+
+    /** 连接池指标期望推送间隔秒数 */
+    private Integer poolMetricPushIntervalSeconds;
+
     /** 阈值配置JSON */
     private String thresholdConfig;
 }

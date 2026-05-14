@@ -1,5 +1,7 @@
 package com.lnzz.argus.datamonitor.service.impl;
 
+import com.lnzz.argus.common.exception.BizException;
+import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.datamonitor.entity.DataSourceConfig;
 import com.lnzz.argus.datamonitor.entity.InterfaceLogTableConfig;
 import com.lnzz.argus.datamonitor.service.InterfaceLogTableInspector;
@@ -45,7 +47,9 @@ public class JdbcMysql57InterfaceLogTableInspector implements InterfaceLogTableI
                 existing.add(resultSet.getString("column_name"));
             }
             if (existing.size() != columns.size()) {
-                throw new IllegalArgumentException("日志表字段映射不存在或不完整: " + columns);
+                Set<String> missing = new LinkedHashSet<>(columns);
+                missing.removeAll(existing);
+                throw new BizException(ResultCode.PARAM_ERROR, "日志表字段映射不存在或不完整: " + missing);
             }
         } catch (SQLException e) {
             throw new IllegalStateException("校验接口日志表字段失败: " + e.getMessage(), e);
@@ -195,7 +199,7 @@ public class JdbcMysql57InterfaceLogTableInspector implements InterfaceLogTableI
 
     private void requireIdentifier(String value, String name) {
         if (!StringUtils.hasText(value) || !IDENTIFIER.matcher(value).matches()) {
-            throw new IllegalArgumentException(name + "非法: " + value);
+            throw new BizException(ResultCode.PARAM_ERROR, name + "非法: " + value);
         }
     }
 

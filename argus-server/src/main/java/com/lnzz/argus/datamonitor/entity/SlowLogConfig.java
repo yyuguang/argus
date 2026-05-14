@@ -39,6 +39,9 @@ public class SlowLogConfig extends BaseEntity {
     /** 是否采集完整 SQL */
     private Boolean collectFullSql;
 
+    /** slow log 采集间隔秒数 */
+    private Integer collectIntervalSeconds;
+
     /** 文件读取位点 */
     private Long cursorOffset;
 

@@ -34,7 +34,8 @@ class DataMonitorConfigControllerTest {
     void updateDelegatesToService() {
         DataMonitorConfigService service = mock(DataMonitorConfigService.class);
         DataMonitorConfigUpdateRequest request = new DataMonitorConfigUpdateRequest(
-                true, "OMS研发组", "zhangsan", "SCM_CONFIG", "remark");
+                true, "OMS研发组", "zhangsan", "SCM_CONFIG",
+                30, 30, 300, 60, "remark");
         when(service.saveOrUpdate(1L, 2L, request)).thenReturn(overview());
         DataMonitorConfigController controller = new DataMonitorConfigController(service);
 
@@ -55,6 +56,10 @@ class DataMonitorConfigControllerTest {
                 "OMS研发组",
                 "zhangsan",
                 "SCM_CONFIG",
+                30,
+                30,
+                300,
+                60,
                 "remark",
                 0,
                 0,

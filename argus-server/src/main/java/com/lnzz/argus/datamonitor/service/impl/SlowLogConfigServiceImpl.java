@@ -29,6 +29,7 @@ public class SlowLogConfigServiceImpl implements SlowLogConfigService {
     private static final String DEFAULT_SOURCE_TYPE = "FILE_TAIL";
     private static final String DEFAULT_CHARSET = "UTF-8";
     private static final long DEFAULT_MIN_QUERY_TIME_MS = 1000L;
+    private static final int DEFAULT_COLLECT_INTERVAL_SECONDS = 60;
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final DataSourceConfigMapper dataSourceConfigMapper;
@@ -83,6 +84,7 @@ public class SlowLogConfigServiceImpl implements SlowLogConfigService {
         config.setCharset(DEFAULT_CHARSET);
         config.setMinQueryTimeMs(DEFAULT_MIN_QUERY_TIME_MS);
         config.setCollectFullSql(Boolean.TRUE);
+        config.setCollectIntervalSeconds(DEFAULT_COLLECT_INTERVAL_SECONDS);
         config.setCursorOffset(0L);
         return config;
     }
@@ -112,6 +114,14 @@ public class SlowLogConfigServiceImpl implements SlowLogConfigService {
         if (request.collectFullSql() != null) {
             config.setCollectFullSql(request.collectFullSql());
         }
+        if (request.collectIntervalSeconds() != null) {
+            if (request.collectIntervalSeconds() < 1) {
+                throw new BizException(ResultCode.PARAM_ERROR, "slow log 采集间隔必须大于 0 秒");
+            }
+            config.setCollectIntervalSeconds(request.collectIntervalSeconds());
+        } else if (config.getCollectIntervalSeconds() == null) {
+            config.setCollectIntervalSeconds(DEFAULT_COLLECT_INTERVAL_SECONDS);
+        }
         if (request.cursorOffset() != null) {
             config.setCursorOffset(Math.max(0L, request.cursorOffset()));
         }
@@ -127,6 +137,7 @@ public class SlowLogConfigServiceImpl implements SlowLogConfigService {
                 config.getCharset(),
                 config.getMinQueryTimeMs(),
                 config.getCollectFullSql(),
+                config.getCollectIntervalSeconds(),
                 config.getCursorOffset(),
                 config.getLastCollectedAt() == null ? null : TIME_FORMATTER.format(config.getLastCollectedAt())
         );

@@ -20,6 +20,7 @@ public interface SlowLogConfigService {
             String charset,
             Long minQueryTimeMs,
             Boolean collectFullSql,
+            Integer collectIntervalSeconds,
             Long cursorOffset
     ) {
     }
@@ -33,6 +34,7 @@ public interface SlowLogConfigService {
             String charset,
             Long minQueryTimeMs,
             Boolean collectFullSql,
+            Integer collectIntervalSeconds,
             Long cursorOffset,
             String lastCollectedAt
     ) {

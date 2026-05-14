@@ -40,6 +40,7 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
 
     private static final Pattern IDENTIFIER = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
     private static final String DEFAULT_SCAN_MODE = "ID_INCREMENT";
+    private static final int DEFAULT_QUALITY_CHECK_INTERVAL_SECONDS = 300;
 
     private final InterfaceLogTableConfigMapper logTableConfigMapper;
     private final DataMonitorConfigMapper dataMonitorConfigMapper;
@@ -173,6 +174,9 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
                 .contains(request.scanMode().trim().toUpperCase(Locale.ROOT))) {
             throw new BizException(ResultCode.PARAM_ERROR, "扫描模式仅支持 ID_INCREMENT / TIME_WINDOW");
         }
+        if (request.qualityCheckIntervalSeconds() != null && request.qualityCheckIntervalSeconds() < 1) {
+            throw new BizException(ResultCode.PARAM_ERROR, "接口日志质量巡检间隔必须大于 0 秒");
+        }
     }
 
     private void requireIdentifier(String value, String name, boolean required) {
@@ -211,6 +215,11 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         config.setScanMode(StringUtils.hasText(request.scanMode())
                 ? request.scanMode().trim().toUpperCase(Locale.ROOT)
                 : StringUtils.hasText(config.getScanMode()) ? config.getScanMode() : DEFAULT_SCAN_MODE);
+        config.setQualityCheckIntervalSeconds(request.qualityCheckIntervalSeconds() != null
+                ? request.qualityCheckIntervalSeconds()
+                : config.getQualityCheckIntervalSeconds() != null
+                ? config.getQualityCheckIntervalSeconds()
+                : DEFAULT_QUALITY_CHECK_INTERVAL_SECONDS);
         config.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
         config.setQualityRules(request.qualityRules() == null ? config.getQualityRules()
                 : JSON.toJSONString(request.qualityRules()));
@@ -230,7 +239,8 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
                 config.getTableName(), config.getPrimaryKeyColumn(), config.getInterfaceCodeColumn(),
                 config.getRequestTimeColumn(), config.getResponseTimeColumn(), config.getResponseBodyColumn(),
                 config.getStatusCodeColumn(), config.getRequestIdColumn(), config.getTraceIdColumn(),
-                config.getScanMode(), config.getLastScanValue(), config.getEnabled(),
+                config.getScanMode(), config.getQualityCheckIntervalSeconds(),
+                config.getLastScanValue(), config.getEnabled(),
                 rules == null ? Set.of() : rules.requiredColumns());
     }
 

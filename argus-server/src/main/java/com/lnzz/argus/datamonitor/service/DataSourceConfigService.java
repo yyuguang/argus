@@ -21,6 +21,15 @@ public interface DataSourceConfigService {
     DataSourceConnectivityTester.DataSourceTestResult test(Long scmConfigId, Long mappingId,
                                                            DataSourceTestRequest request);
 
+    default DataSourceConnectivityTester.DataSourceTestResult testExisting(Long scmConfigId, Long mappingId,
+                                                                           Long datasourceId) {
+        return testExisting(scmConfigId, mappingId, datasourceId, null);
+    }
+
+    DataSourceConnectivityTester.DataSourceTestResult testExisting(Long scmConfigId, Long mappingId,
+                                                                    Long datasourceId,
+                                                                    ExistingDataSourceTestRequest request);
+
     record DataSourceConfigRequest(
             String datasourceCode,
             String datasourceName,
@@ -34,12 +43,21 @@ public interface DataSourceConfigService {
             String password,
             Boolean readonly,
             Boolean enabled,
+            Integer runtimeCollectIntervalSeconds,
+            Integer poolMetricPushIntervalSeconds,
             ThresholdConfig thresholds,
             CollectOptions collectOptions
     ) {
     }
 
     record DataSourceTestRequest(
+            String jdbcUrl,
+            String username,
+            String password
+    ) {
+    }
+
+    record ExistingDataSourceTestRequest(
             String jdbcUrl,
             String username,
             String password
@@ -88,6 +106,8 @@ public interface DataSourceConfigService {
             Boolean collectGlobalStatus,
             Boolean explainEnabled,
             Boolean fullSqlCollectEnabled,
+            Integer runtimeCollectIntervalSeconds,
+            Integer poolMetricPushIntervalSeconds,
             ThresholdConfig thresholds
     ) {
     }

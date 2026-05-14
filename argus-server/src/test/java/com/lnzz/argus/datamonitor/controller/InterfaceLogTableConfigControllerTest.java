@@ -62,6 +62,6 @@ class InterfaceLogTableConfigControllerTest {
     private InterfaceLogTableConfigResponse response() {
         return new InterfaceLogTableConfigResponse(3L, 10L, 100L, "oms-product", "PROD", "接口日志",
                 "api_call_log", "id", "api_code", "start_time", "end_time", "response_body",
-                "response_code", "request_id", "trace_id", "ID_INCREMENT", null, true, Set.of());
+                "response_code", "request_id", "trace_id", "ID_INCREMENT", 300, null, true, Set.of());
     }
 }

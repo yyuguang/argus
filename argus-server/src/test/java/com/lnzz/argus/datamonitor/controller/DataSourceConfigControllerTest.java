@@ -6,6 +6,7 @@ import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConf
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConfigResponse;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.EnableRequest;
+import com.lnzz.argus.datamonitor.service.DataSourceConfigService.ExistingDataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConnectivityTester.DataSourceTestResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -40,7 +41,7 @@ class DataSourceConfigControllerTest {
         DataSourceConfigService service = mock(DataSourceConfigService.class);
         DataSourceConfigRequest request = new DataSourceConfigRequest("oms_master", null,
                 "MYSQL", "5.7", "jdbc:mysql://127.0.0.1:3306/oms", null, null,
-                null, "u", "p", true, true, null, null);
+                null, "u", "p", true, true, 30, 30, null, null);
         when(service.create(1L, 2L, request)).thenReturn(response(true));
         DataSourceConfigController controller = new DataSourceConfigController(service);
 
@@ -80,10 +81,27 @@ class DataSourceConfigControllerTest {
         verify(service).test(1L, 2L, request);
     }
 
+    @Test
+    @DisplayName("测试已保存数据源连通性透传数据源 ID")
+    void testExistingDelegatesToService() {
+        DataSourceConfigService service = mock(DataSourceConfigService.class);
+        ExistingDataSourceTestRequest request = new ExistingDataSourceTestRequest(
+                "jdbc:mysql://127.0.0.1:3306/oms", "u", null);
+        DataSourceTestResult testResult = new DataSourceTestResult(true, true, true, true,
+                true, "5.7.44", "ok");
+        when(service.testExisting(1L, 2L, 100L, request)).thenReturn(testResult);
+        DataSourceConfigController controller = new DataSourceConfigController(service);
+
+        Result<DataSourceTestResult> result = controller.testExisting(1L, 2L, 100L, request);
+
+        assertTrue(result.getData().readonlyVerified());
+        verify(service).testExisting(1L, 2L, 100L, request);
+    }
+
     private DataSourceConfigResponse response(boolean enabled) {
         return new DataSourceConfigResponse(100L, 10L, 2L, "oms_master", "OMS主库",
                 "MYSQL", "5.7", "jdbc:mysql://127.0.0.1:3306/oms", "127.0.0.1",
                 3306, "oms", "argus_readonly", true, enabled, true, true, true,
-                true, true, true, null);
+                true, true, true, 30, 30, null);
     }
 }

@@ -6,6 +6,7 @@ import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConf
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConfigResponse;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.EnableRequest;
+import com.lnzz.argus.datamonitor.service.DataSourceConfigService.ExistingDataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConnectivityTester.DataSourceTestResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -68,5 +69,13 @@ public class DataSourceConfigController {
                                              @PathVariable Long mappingId,
                                              @RequestBody DataSourceTestRequest request) {
         return Result.success(dataSourceConfigService.test(scmConfigId, mappingId, request));
+    }
+
+    @PostMapping("/{datasourceId}/test")
+    public Result<DataSourceTestResult> testExisting(@PathVariable Long scmConfigId,
+                                                     @PathVariable Long mappingId,
+                                                     @PathVariable Long datasourceId,
+                                                     @RequestBody(required = false) ExistingDataSourceTestRequest request) {
+        return Result.success(dataSourceConfigService.testExisting(scmConfigId, mappingId, datasourceId, request));
     }
 }

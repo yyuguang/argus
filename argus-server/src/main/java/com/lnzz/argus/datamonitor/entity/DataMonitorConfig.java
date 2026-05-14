@@ -46,6 +46,18 @@ public class DataMonitorConfig extends BaseEntity {
     /** 告警 Webhook 模式：SCM_CONFIG/CUSTOM */
     private String alertWebhookMode;
 
+    /** 默认数据库运行态采集间隔秒数 */
+    private Integer defaultRuntimeCollectIntervalSeconds;
+
+    /** 默认连接池指标推送间隔秒数 */
+    private Integer defaultPoolMetricPushIntervalSeconds;
+
+    /** 默认接口日志质量巡检间隔秒数 */
+    private Integer defaultLogQualityCheckIntervalSeconds;
+
+    /** 告警扫描间隔秒数 */
+    private Integer alertScanIntervalSeconds;
+
     /** 备注 */
     private String remark;
 }

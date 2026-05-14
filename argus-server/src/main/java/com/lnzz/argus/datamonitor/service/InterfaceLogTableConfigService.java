@@ -34,6 +34,7 @@ public interface InterfaceLogTableConfigService {
             String requestIdColumn,
             String traceIdColumn,
             String scanMode,
+            Integer qualityCheckIntervalSeconds,
             Boolean enabled,
             InterfaceLogTableInspector.LogQualityRules qualityRules,
             String alertRules
@@ -60,6 +61,7 @@ public interface InterfaceLogTableConfigService {
             String requestIdColumn,
             String traceIdColumn,
             String scanMode,
+            Integer qualityCheckIntervalSeconds,
             String lastScanValue,
             Boolean enabled,
             Set<String> requiredColumns

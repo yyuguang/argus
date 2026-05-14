@@ -32,6 +32,10 @@ export function testDataSource(scmConfigId, mappingId, payload) {
   return http.post(`${mappingBase(scmConfigId, mappingId)}/datasources/test`, payload)
 }
 
+export function testExistingDataSource(scmConfigId, mappingId, datasourceId, payload) {
+  return http.post(`${mappingBase(scmConfigId, mappingId)}/datasources/${datasourceId}/test`, payload)
+}
+
 export function fetchSlowLogConfig(scmConfigId, mappingId, datasourceId) {
   return http.get(`${mappingBase(scmConfigId, mappingId)}/datasources/${datasourceId}/slow-log`)
 }

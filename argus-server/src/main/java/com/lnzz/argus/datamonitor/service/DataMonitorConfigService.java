@@ -34,6 +34,10 @@ public interface DataMonitorConfigService {
             String ownerTeam,
             String techOwner,
             String alertWebhookMode,
+            Integer defaultRuntimeCollectIntervalSeconds,
+            Integer defaultPoolMetricPushIntervalSeconds,
+            Integer defaultLogQualityCheckIntervalSeconds,
+            Integer alertScanIntervalSeconds,
             String remark
     ) {
     }
@@ -48,6 +52,10 @@ public interface DataMonitorConfigService {
             String ownerTeam,
             String techOwner,
             String alertWebhookMode,
+            Integer defaultRuntimeCollectIntervalSeconds,
+            Integer defaultPoolMetricPushIntervalSeconds,
+            Integer defaultLogQualityCheckIntervalSeconds,
+            Integer alertScanIntervalSeconds,
             String remark,
             int datasourceCount,
             int logTableCount,

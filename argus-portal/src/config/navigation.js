@@ -54,6 +54,12 @@ export const menuGroups = [
         description: '查看慢 SQL、连接池与接口日志质量',
         icon: '▥',
       },
+      {
+        path: '/quality/data-monitor/configs',
+        label: '监控配置',
+        description: '维护应用数据源、slow log 与日志表',
+        icon: '◇',
+      },
     ],
   },
   {

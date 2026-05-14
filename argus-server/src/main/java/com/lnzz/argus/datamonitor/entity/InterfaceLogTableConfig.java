@@ -32,6 +32,7 @@ public class InterfaceLogTableConfig extends BaseEntity {
     private String requestIdColumn;
     private String traceIdColumn;
     private String scanMode;
+    private Integer qualityCheckIntervalSeconds;
     private String lastScanValue;
     private String qualityRules;
     private String alertRules;

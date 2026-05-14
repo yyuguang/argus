@@ -42,7 +42,7 @@ class SlowLogConfigServiceImplTest {
         Fixture fixture = new Fixture();
         when(fixture.slowLogConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
         SlowLogConfigRequest request = new SlowLogConfigRequest(true, "file_tail",
-                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1500L, true, 10L);
+                "/var/lib/mysql/mysql-slow.log", "UTF-8", 1500L, true, 60, 10L);
 
         SlowLogConfigResponse response = fixture.service.saveOrUpdate(1L, 2L, 100L, request);
 

@@ -37,6 +37,10 @@ public class DataMonitorConfigServiceImpl implements DataMonitorConfigService {
 
     private static final String DEFAULT_ENVIRONMENT = "PROD";
     private static final String ALERT_WEBHOOK_MODE_SCM_CONFIG = "SCM_CONFIG";
+    private static final int DEFAULT_RUNTIME_COLLECT_INTERVAL_SECONDS = 30;
+    private static final int DEFAULT_POOL_METRIC_PUSH_INTERVAL_SECONDS = 30;
+    private static final int DEFAULT_LOG_QUALITY_CHECK_INTERVAL_SECONDS = 300;
+    private static final int DEFAULT_ALERT_SCAN_INTERVAL_SECONDS = 60;
 
     private final DataMonitorConfigMapper dataMonitorConfigMapper;
     private final DataSourceConfigMapper dataSourceConfigMapper;
@@ -109,6 +113,10 @@ public class DataMonitorConfigServiceImpl implements DataMonitorConfigService {
         config.setEnvironment(DEFAULT_ENVIRONMENT);
         config.setEnabled(Boolean.FALSE);
         config.setAlertWebhookMode(ALERT_WEBHOOK_MODE_SCM_CONFIG);
+        config.setDefaultRuntimeCollectIntervalSeconds(DEFAULT_RUNTIME_COLLECT_INTERVAL_SECONDS);
+        config.setDefaultPoolMetricPushIntervalSeconds(DEFAULT_POOL_METRIC_PUSH_INTERVAL_SECONDS);
+        config.setDefaultLogQualityCheckIntervalSeconds(DEFAULT_LOG_QUALITY_CHECK_INTERVAL_SECONDS);
+        config.setAlertScanIntervalSeconds(DEFAULT_ALERT_SCAN_INTERVAL_SECONDS);
         return config;
     }
 
@@ -126,6 +134,18 @@ public class DataMonitorConfigServiceImpl implements DataMonitorConfigService {
         config.setAlertWebhookMode(StringUtils.hasText(alertWebhookMode)
                 ? alertWebhookMode.toUpperCase(Locale.ROOT)
                 : ALERT_WEBHOOK_MODE_SCM_CONFIG);
+        config.setDefaultRuntimeCollectIntervalSeconds(valueOrDefault(
+                positiveInterval(request.defaultRuntimeCollectIntervalSeconds(), "默认数据库运行态采集间隔"),
+                valueOrDefault(config.getDefaultRuntimeCollectIntervalSeconds(), DEFAULT_RUNTIME_COLLECT_INTERVAL_SECONDS)));
+        config.setDefaultPoolMetricPushIntervalSeconds(valueOrDefault(
+                positiveInterval(request.defaultPoolMetricPushIntervalSeconds(), "默认连接池指标推送间隔"),
+                valueOrDefault(config.getDefaultPoolMetricPushIntervalSeconds(), DEFAULT_POOL_METRIC_PUSH_INTERVAL_SECONDS)));
+        config.setDefaultLogQualityCheckIntervalSeconds(valueOrDefault(
+                positiveInterval(request.defaultLogQualityCheckIntervalSeconds(), "默认接口日志质量巡检间隔"),
+                valueOrDefault(config.getDefaultLogQualityCheckIntervalSeconds(), DEFAULT_LOG_QUALITY_CHECK_INTERVAL_SECONDS)));
+        config.setAlertScanIntervalSeconds(valueOrDefault(
+                positiveInterval(request.alertScanIntervalSeconds(), "告警扫描间隔"),
+                valueOrDefault(config.getAlertScanIntervalSeconds(), DEFAULT_ALERT_SCAN_INTERVAL_SECONDS)));
     }
 
     private DataMonitorConfigOverview toOverview(DataMonitorConfig config, ProjectMapping mapping) {
@@ -149,6 +169,10 @@ public class DataMonitorConfigServiceImpl implements DataMonitorConfigService {
                 config.getOwnerTeam(),
                 config.getTechOwner(),
                 config.getAlertWebhookMode(),
+                valueOrDefault(config.getDefaultRuntimeCollectIntervalSeconds(), DEFAULT_RUNTIME_COLLECT_INTERVAL_SECONDS),
+                valueOrDefault(config.getDefaultPoolMetricPushIntervalSeconds(), DEFAULT_POOL_METRIC_PUSH_INTERVAL_SECONDS),
+                valueOrDefault(config.getDefaultLogQualityCheckIntervalSeconds(), DEFAULT_LOG_QUALITY_CHECK_INTERVAL_SECONDS),
+                valueOrDefault(config.getAlertScanIntervalSeconds(), DEFAULT_ALERT_SCAN_INTERVAL_SECONDS),
                 config.getRemark(),
                 datasourceCount,
                 logTableCount,
@@ -166,5 +190,16 @@ public class DataMonitorConfigServiceImpl implements DataMonitorConfigService {
             return null;
         }
         return value.trim();
+    }
+
+    private Integer positiveInterval(Integer value, String name) {
+        if (value != null && value < 1) {
+            throw new BizException(ResultCode.PARAM_ERROR, name + "必须大于 0 秒");
+        }
+        return value;
+    }
+
+    private Integer valueOrDefault(Integer value, Integer defaultValue) {
+        return value != null ? value : defaultValue;
     }
 }

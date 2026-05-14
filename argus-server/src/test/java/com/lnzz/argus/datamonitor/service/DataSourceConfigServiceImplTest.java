@@ -11,6 +11,7 @@ import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConf
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceConfigResponse;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.DataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.EnableRequest;
+import com.lnzz.argus.datamonitor.service.DataSourceConfigService.ExistingDataSourceTestRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConfigService.ThresholdConfig;
 import com.lnzz.argus.datamonitor.service.DataSourceConnectivityTester.DataSourceConnectionRequest;
 import com.lnzz.argus.datamonitor.service.DataSourceConnectivityTester.DataSourceTestResult;
@@ -19,6 +20,7 @@ import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.service.ScmConfigService;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -112,6 +114,49 @@ class DataSourceConfigServiceImplTest {
         verify(fixture.connectivityTester).test(any(DataSourceConnectionRequest.class));
     }
 
+    @Test
+    @DisplayName("编辑态测试已保存数据源时使用已加密密码")
+    void testExistingUsesSavedSecret() {
+        Fixture fixture = new Fixture();
+        DataSourceConfig datasource = datasource();
+        datasource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/oms");
+        datasource.setUsername("argus_readonly");
+        datasource.setPasswordSecret(fixture.secretCodec.encrypt("readonly_pwd"));
+        when(fixture.dataSourceMapper.selectById(100L)).thenReturn(datasource);
+        DataSourceTestResult testResult = new DataSourceTestResult(true, true, true, true,
+                true, "5.7.44", "只读监控权限验证通过");
+        when(fixture.connectivityTester.test(any(DataSourceConnectionRequest.class))).thenReturn(testResult);
+
+        DataSourceTestResult response = fixture.service.testExisting(1L, 2L, 100L,
+                new ExistingDataSourceTestRequest("jdbc:mysql://127.0.0.1:3307/oms_v2",
+                        "argus_readonly_v2", null));
+
+        assertTrue(response.connected());
+        ArgumentCaptor<DataSourceConnectionRequest> captor = ArgumentCaptor.forClass(DataSourceConnectionRequest.class);
+        verify(fixture.connectivityTester).test(captor.capture());
+        assertEquals("jdbc:mysql://127.0.0.1:3307/oms_v2", captor.getValue().jdbcUrl());
+        assertEquals("argus_readonly_v2", captor.getValue().username());
+        assertEquals("readonly_pwd", captor.getValue().password());
+    }
+
+    @Test
+    @DisplayName("已保存密码无法解密时提示重新输入密码")
+    void testExistingRejectsBrokenSavedSecret() {
+        Fixture fixture = new Fixture();
+        DataSourceConfig datasource = datasource();
+        datasource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/oms");
+        datasource.setUsername("argus_readonly");
+        datasource.setPasswordSecret("AES_GCM:broken");
+        when(fixture.dataSourceMapper.selectById(100L)).thenReturn(datasource);
+
+        BizException exception = assertThrows(BizException.class,
+                () -> fixture.service.testExisting(1L, 2L, 100L,
+                        new ExistingDataSourceTestRequest("jdbc:mysql://127.0.0.1:3306/oms",
+                                "argus_readonly", null)));
+
+        assertEquals("已保存数据源密码无法解密，请重新输入密码后测试或保存", exception.getMessage());
+    }
+
     private DataSourceConfigRequest request(boolean readonly) {
         return new DataSourceConfigRequest(
                 "oms_master",
@@ -126,6 +171,8 @@ class DataSourceConfigServiceImplTest {
                 "readonly_pwd",
                 readonly,
                 true,
+                30,
+                30,
                 new ThresholdConfig(5, 30, 5, 80),
                 new CollectOptions(true, true, true, true, true, true)
         );
