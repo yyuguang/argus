@@ -286,7 +286,7 @@
                 </template>
               </el-table-column>
               <el-table-column prop="contentSummary" label="摘要" min-width="260" />
-              <el-table-column prop="errorMessage" label="失败原因" min-width="220" />
+              <el-table-column prop="errorMessage" label="失败/跳过原因" min-width="220" />
               <el-table-column prop="retryCount" label="重试" width="80" />
               <el-table-column label="发送时间" min-width="170">
                 <template #default="{ row }">{{ formatDate(row.sentAt || row.createTime) }}</template>
@@ -733,6 +733,7 @@ function logLevelType(level) {
 function notificationType(status) {
   if (status === 'SENT') return 'success'
   if (status === 'FAILED') return 'danger'
+  if (status === 'SKIPPED') return 'info'
   return 'warning'
 }
 

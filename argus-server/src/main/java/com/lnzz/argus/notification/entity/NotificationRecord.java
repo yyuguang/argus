@@ -37,7 +37,7 @@ public class NotificationRecord extends BaseEntity {
     /** 通知内容摘要 */
     private String contentSummary;
 
-    /** 状态: PENDING/SENT/FAILED */
+    /** 状态: PENDING/SENT/FAILED/SKIPPED */
     private String status;
 
     /** 失败原因 */

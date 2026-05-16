@@ -9,7 +9,8 @@ package com.lnzz.argus.common.enums;
 public enum NotificationStatus {
 
     SENT("SENT", "已发送"),
-    FAILED("FAILED", "发送失败");
+    FAILED("FAILED", "发送失败"),
+    SKIPPED("SKIPPED", "已跳过");
 
     private final String code;
     private final String name;

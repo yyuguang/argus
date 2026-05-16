@@ -1,10 +1,12 @@
 package com.lnzz.argus.notification.service;
 
 import com.lnzz.argus.config.NotificationProperties;
+import com.lnzz.argus.common.enums.NotificationStatus;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
+import com.lnzz.argus.notification.entity.NotificationRecord;
 import com.lnzz.argus.notification.mapper.NotificationRecordMapper;
 import com.lnzz.argus.notification.service.impl.NotificationServiceImpl;
 import com.lnzz.argus.review.ai.ScoreCalculator;
@@ -18,9 +20,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -75,7 +79,8 @@ class NotificationServiceImplTest {
                 .thenReturn("review-content");
         lenient().when(templateBuilder.buildDetailedAlert(any(), any())).thenReturn("error-content");
         lenient().when(wechatClient.sendMarkdown(anyString(), anyString(), any())).thenReturn(true);
-        lenient().when(router.route(any())).thenReturn(new NotificationRouter.RouteResult("critical", "urgent", true));
+        lenient().when(router.route(any(ErrorEvent.class), any(ReviewConfig.NotificationConfig.class)))
+                .thenReturn(new NotificationRouter.RouteResult("critical", "urgent", true));
     }
 
     @Test
@@ -147,6 +152,28 @@ class NotificationServiceImplTest {
     }
 
     @Test
+    @DisplayName("错误告警被路由抑制时写入跳过通知记录")
+    void suppressedErrorAlertWritesSkippedRecord() {
+        ErrorEvent event = createErrorEvent();
+        ScmConfig scmConfig = createScmConfig(1, "https://custom-webhook");
+        mockProjectMappingAndScm(scmConfig);
+        when(router.route(any(ErrorEvent.class), any(ReviewConfig.NotificationConfig.class)))
+                .thenReturn(new NotificationRouter.RouteResult("default", "silent", false));
+
+        boolean sent = notificationService.sendErrorAlert(event, new ErrorAnalysis());
+
+        assertFalse(sent);
+        verify(wechatClient, never()).sendMarkdown(anyString(), anyString(), any());
+        ArgumentCaptor<NotificationRecord> recordCaptor = ArgumentCaptor.forClass(NotificationRecord.class);
+        verify(recordMapper).insert(recordCaptor.capture());
+        NotificationRecord record = recordCaptor.getValue();
+        assertEquals("ERROR_ALERT", record.getType());
+        assertEquals("ERROR_EVENT", record.getRefType());
+        assertEquals(event.getId(), record.getRefId());
+        assertEquals(NotificationStatus.SKIPPED.getCode(), record.getStatus());
+    }
+
+    @Test
     @DisplayName("错误告警使用 appName 映射到 SCM webhook")
     void errorAlertUsesScmWebhookByAppName() {
         ErrorEvent event = createErrorEvent();
@@ -156,6 +183,59 @@ class NotificationServiceImplTest {
         notificationService.sendErrorAlert(event, new ErrorAnalysis());
 
         verify(wechatClient).sendMarkdown(eq("critical"), eq("error-content"), eq("https://custom-webhook"));
+    }
+
+    @Test
+    @DisplayName("错误告警路由使用 SCM reviewConfig 中的前端配置")
+    void errorAlertRouteUsesScmReviewConfig() {
+        ErrorEvent event = createErrorEvent();
+        event.setSeverity("P3");
+        ScmConfig scmConfig = createScmConfig(1, "https://custom-webhook");
+        scmConfig.setReviewConfig("""
+                {
+                  "notification": {
+                    "errorAlertRoutes": {
+                      "P3": { "enabled": true, "channel": "default", "priority": "normal" }
+                    }
+                  }
+                }
+                """);
+        mockProjectMappingAndScm(scmConfig);
+
+        notificationService.sendErrorAlert(event, new ErrorAnalysis());
+
+        ArgumentCaptor<ReviewConfig.NotificationConfig> configCaptor =
+                ArgumentCaptor.forClass(ReviewConfig.NotificationConfig.class);
+        verify(router).route(eq(event), configCaptor.capture());
+        ReviewConfig.ErrorAlertRouteConfig p3Route = configCaptor.getValue().getErrorAlertRoutes().get("P3");
+        assertEquals(true, p3Route.isEnabled());
+        assertEquals("default", p3Route.getChannel());
+        assertEquals("normal", p3Route.getPriority());
+    }
+
+    @Test
+    @DisplayName("错误告警重试策略使用 SCM reviewConfig 中的前端配置")
+    void errorAlertRetryUsesScmReviewConfig() {
+        ErrorEvent event = createErrorEvent();
+        ScmConfig scmConfig = createScmConfig(1, "https://custom-webhook");
+        scmConfig.setReviewConfig("""
+                {
+                  "notification": {
+                    "retry": {
+                      "maxRetries": 2,
+                      "backoffSeconds": [0, 0],
+                      "timeoutSec": 60
+                    }
+                  }
+                }
+                """);
+        mockProjectMappingAndScm(scmConfig);
+        when(wechatClient.sendMarkdown(anyString(), anyString(), any()))
+                .thenReturn(false, false, true);
+
+        notificationService.sendErrorAlert(event, new ErrorAnalysis());
+
+        verify(wechatClient, times(3)).sendMarkdown(eq("critical"), eq("error-content"), eq("https://custom-webhook"));
     }
 
     private ReviewTask createTask() {

@@ -62,7 +62,7 @@ management:
 argus:
   # 内部 API 鉴权
   internal:
-    token: ${ARGUS_INTERNAL_TOKEN:argus-internal-token-change-me}
+    token: ${ARGUS_INTERNAL_TOKEN:argustest}
 
   # SCM 平台配置
   scm:
@@ -223,7 +223,6 @@ argus:
   # ==================== M7: 通知配置 ====================
   notification:
     enabled: true
-    default-channel: wechat
     wechat:
       rate-limit:
         same-type-interval: 60
@@ -239,21 +238,6 @@ argus:
       webhooks:
         default: ${DINGTALK_WEBHOOK_DEFAULT:}
 
-    # M7-A01: 路由规则（按顺序匹配，命中即停）
-    route-rules:
-      - severity: P0
-        channel: critical
-        priority: urgent
-      - severity: P1
-        channel: critical
-        priority: urgent
-      - severity: P2
-        channel: default
-        priority: normal
-      - severity: P3
-        channel: default
-        priority: suppress
-
     # M7-A05: 静默控制
     silence:
       always-notify-p0p1: true
@@ -261,19 +245,10 @@ argus:
       p3-interval: 3600
       global-max-per-hour: 30
 
-    # M7-A05: 重试配置
-    retry:
-      max-retries: 3
-      backoff-seconds:
-        - 30
-        - 120
-        - 300
-      timeout: 600
-
 # ==================== 日志配置 ====================
 logging:
   level:
     com.lnzz.argus: debug
     org.springframework.ai: info
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n%ex{full}"

@@ -49,6 +49,12 @@ export const menuGroups = [
         icon: '!',
       },
       {
+        path: '/quality/error-type-rules',
+        label: '类型规则',
+        description: '维护异常类型识别规则',
+        icon: '≡',
+      },
+      {
         path: '/quality/data-monitor',
         label: '数据监控',
         description: '查看慢 SQL、连接池与接口日志质量',

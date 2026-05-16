@@ -1,12 +1,19 @@
 package com.lnzz.argus.error.parse;
 
 import com.lnzz.argus.common.enums.ErrorType;
+import com.lnzz.argus.error.entity.ErrorTypeRule;
+import com.lnzz.argus.error.mapper.ErrorTypeRuleMapper;
 import com.lnzz.argus.error.model.ErrorLogEntry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @DisplayName("ErrorTypeIdentifier - 错误类型识别")
 class ErrorTypeIdentifierTest {
@@ -63,6 +70,31 @@ class ErrorTypeIdentifierTest {
         entry.setClassName("com.example.Service");
         entry.setMessage("something weird happened");
         assertEquals(ErrorType.UNKNOWN, identifier.identify(entry));
+    }
+
+    @Test
+    @DisplayName("配置规则: exceptionType 元信息命中 HTTP_ERROR")
+    void configuredExceptionTypeRule() {
+        ErrorTypeIdentifier configured = configuredIdentifier(List.of(
+                rule("Spring 静态资源不存在", "HTTP_ERROR", "EXCEPTION_CLASS", "EXACT",
+                        "NoResourceFoundException", 10)
+        ));
+
+        ErrorLogEntry entry = new ErrorLogEntry();
+        entry.setMessage("系统异常: exceptionType=org.springframework.web.servlet.resource.NoResourceFoundException, "
+                + "exceptionMessage=No static resource api/v1/data-monitor/dashboard.");
+
+        assertEquals(ErrorType.HTTP_ERROR, configured.identify(entry));
+    }
+
+    @Test
+    @DisplayName("配置规则: HTTP 状态区间命中 NGINX_4XX")
+    void configuredHttpStatusRangeRule() {
+        ErrorTypeIdentifier configured = configuredIdentifier(List.of(
+                rule("Nginx 4xx", "NGINX_4XX", "HTTP_STATUS", "RANGE", "400-499", 60)
+        ));
+
+        assertEquals(ErrorType.NGINX_4XX, configured.identifyNginxError(418));
     }
 
     // ======================== Nginx HTTP 状态码识别 ========================
@@ -149,5 +181,26 @@ class ErrorTypeIdentifierTest {
     void threeArgByMessage() {
         assertEquals(ErrorType.TIMEOUT,
                 identifier.identify("com.example.Service", null, "read timed out"));
+    }
+
+    private ErrorTypeIdentifier configuredIdentifier(List<ErrorTypeRule> rules) {
+        ErrorTypeRuleMapper mapper = mock(ErrorTypeRuleMapper.class);
+        when(mapper.selectList(any())).thenReturn(rules);
+        ErrorTypeIdentifier configured = new ErrorTypeIdentifier();
+        configured.setRuleMapper(mapper);
+        return configured;
+    }
+
+    private ErrorTypeRule rule(String name, String errorType, String field,
+                               String mode, String pattern, int priority) {
+        ErrorTypeRule rule = new ErrorTypeRule();
+        rule.setRuleName(name);
+        rule.setErrorType(errorType);
+        rule.setMatchField(field);
+        rule.setMatchMode(mode);
+        rule.setPattern(pattern);
+        rule.setPriority(priority);
+        rule.setEnabled(true);
+        return rule;
     }
 }

@@ -47,3 +47,23 @@ export function adjustSeverity(id, payload) {
 export function saveManualConclusion(id, payload) {
   return http.post(`/api/v1/errors/${id}/manual-conclusion`, payload)
 }
+
+export function fetchErrorTypeRules(params = {}) {
+  return http.get('/api/v1/error-type-rules', { params })
+}
+
+export function fetchErrorTypeOptions() {
+  return http.get('/api/v1/error-type-rules/types')
+}
+
+export function createErrorTypeRule(payload) {
+  return http.post('/api/v1/error-type-rules', payload)
+}
+
+export function updateErrorTypeRule(id, payload) {
+  return http.put(`/api/v1/error-type-rules/${id}`, payload)
+}
+
+export function deleteErrorTypeRule(id) {
+  return http.delete(`/api/v1/error-type-rules/${id}`)
+}

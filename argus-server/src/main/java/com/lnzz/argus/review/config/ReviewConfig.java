@@ -339,6 +339,8 @@ public class ReviewConfig {
         private int scoreAlertThreshold = 60;
         private List<String> scoreAlertChannels = new ArrayList<>();
         private boolean wechatNotifyEnabled = true;
+        private Map<String, ErrorAlertRouteConfig> errorAlertRoutes = defaultErrorAlertRoutes();
+        private NotificationRetryConfig retry = new NotificationRetryConfig();
 
         {
             scoreAlertChannels.add("wechat");
@@ -350,6 +352,88 @@ public class ReviewConfig {
             if (o.scoreAlertChannels != null && !o.scoreAlertChannels.isEmpty())
                 this.scoreAlertChannels = o.scoreAlertChannels;
             this.wechatNotifyEnabled = o.wechatNotifyEnabled;
+            this.errorAlertRoutes = mergeErrorAlertRoutes(this.errorAlertRoutes, o.errorAlertRoutes);
+            this.retry = this.retry.merge(o.retry);
+            return this;
+        }
+
+        private static Map<String, ErrorAlertRouteConfig> defaultErrorAlertRoutes() {
+            Map<String, ErrorAlertRouteConfig> routes = new LinkedHashMap<>();
+            routes.put("P0", new ErrorAlertRouteConfig(true, "critical", "urgent"));
+            routes.put("P1", new ErrorAlertRouteConfig(true, "critical", "urgent"));
+            routes.put("P2", new ErrorAlertRouteConfig(true, "default", "normal"));
+            routes.put("P3", new ErrorAlertRouteConfig(false, "default", "low"));
+            return routes;
+        }
+
+        private static Map<String, ErrorAlertRouteConfig> mergeErrorAlertRoutes(
+                Map<String, ErrorAlertRouteConfig> base,
+                Map<String, ErrorAlertRouteConfig> override) {
+            Map<String, ErrorAlertRouteConfig> merged = new LinkedHashMap<>();
+            if (base != null) {
+                base.forEach((severity, route) -> merged.put(severity, route.copy()));
+            }
+            if (override != null) {
+                override.forEach((severity, route) -> {
+                    if (severity != null && route != null) {
+                        ErrorAlertRouteConfig current = merged.getOrDefault(severity, new ErrorAlertRouteConfig());
+                        merged.put(severity, current.merge(route));
+                    }
+                });
+            }
+            return merged;
+        }
+    }
+
+    @Data
+    public static class ErrorAlertRouteConfig {
+        private boolean enabled = true;
+        private String channel = "default";
+        private String priority = "normal";
+
+        public ErrorAlertRouteConfig() {
+        }
+
+        public ErrorAlertRouteConfig(boolean enabled, String channel, String priority) {
+            this.enabled = enabled;
+            this.channel = channel;
+            this.priority = priority;
+        }
+
+        ErrorAlertRouteConfig merge(ErrorAlertRouteConfig o) {
+            if (o == null) return this;
+            this.enabled = o.enabled;
+            if (o.channel != null && !o.channel.isBlank()) {
+                this.channel = o.channel;
+            }
+            if (o.priority != null && !o.priority.isBlank()) {
+                this.priority = o.priority;
+            }
+            return this;
+        }
+
+        ErrorAlertRouteConfig copy() {
+            return new ErrorAlertRouteConfig(enabled, channel, priority);
+        }
+    }
+
+    @Data
+    public static class NotificationRetryConfig {
+        private int maxRetries = 3;
+        private List<Integer> backoffSeconds = new ArrayList<>(List.of(30, 120, 300));
+        private int timeoutSec = 600;
+
+        NotificationRetryConfig merge(NotificationRetryConfig o) {
+            if (o == null) return this;
+            if (o.maxRetries >= 0) {
+                this.maxRetries = o.maxRetries;
+            }
+            if (o.backoffSeconds != null && !o.backoffSeconds.isEmpty()) {
+                this.backoffSeconds = o.backoffSeconds;
+            }
+            if (o.timeoutSec > 0) {
+                this.timeoutSec = o.timeoutSec;
+            }
             return this;
         }
     }

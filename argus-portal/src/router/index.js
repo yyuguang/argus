@@ -6,6 +6,7 @@ import ReviewTaskPage from '../views/ReviewTaskPage.vue'
 import ScmConfigPage from '../views/ScmConfigPage.vue'
 import PersonalQualityPage from '../views/PersonalQualityPage.vue'
 import ErrorDiagnosisPage from '../views/ErrorDiagnosisPage.vue'
+import ErrorTypeRulePage from '../views/ErrorTypeRulePage.vue'
 import DataMonitorPage from '../views/DataMonitorPage.vue'
 import DataMonitorConfigPage from '../views/DataMonitorConfigPage.vue'
 import WebhookGuidePage from '../views/WebhookGuidePage.vue'
@@ -73,6 +74,15 @@ const router = createRouter({
       component: ErrorDiagnosisPage,
       meta: {
         title: '应用服务错误',
+        section: '质量治理',
+      },
+    },
+    {
+      path: '/quality/error-type-rules',
+      name: 'error-type-rules',
+      component: ErrorTypeRulePage,
+      meta: {
+        title: '错误类型规则',
         section: '质量治理',
       },
     },

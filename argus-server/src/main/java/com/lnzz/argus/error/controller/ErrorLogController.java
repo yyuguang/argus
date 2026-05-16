@@ -29,7 +29,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ErrorLogController {
 
-    @Value("${argus.internal.token:argus-internal-token-change-me}")
+    @Value("${argus.internal.token:argustest}")
     private String internalToken;
 
     private final ErrorLogService errorLogService;

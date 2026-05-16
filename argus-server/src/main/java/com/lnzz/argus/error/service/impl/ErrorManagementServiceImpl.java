@@ -168,8 +168,11 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
                 .eq(ErrorAnalysis::getErrorEventId, eventId)
                 .orderByDesc(ErrorAnalysis::getCreateTime)
                 .last("LIMIT 1"));
-        notificationService.sendErrorAlert(event, analysis);
-        return Map.of("eventId", eventId, "status", "NOTIFY_SUBMITTED");
+        boolean sent = notificationService.sendErrorAlert(event, analysis);
+        errorEventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getId, eventId)
+                .set(ErrorEvent::getNotified, sent));
+        return Map.of("eventId", eventId, "status", sent ? "NOTIFIED" : "NOTIFY_SKIPPED");
     }
 
     @Override

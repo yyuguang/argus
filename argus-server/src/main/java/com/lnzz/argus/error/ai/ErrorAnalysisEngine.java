@@ -30,6 +30,7 @@ public class ErrorAnalysisEngine {
     private static final long RETRY_BACKOFF_MS = 2000;
     private static final long TIMEOUT_MS = 60_000;
     private static final String AI_MODEL = "deepseek-chat";
+    private static final int MAX_REPAIR_RESPONSE_CHARS = 16_000;
 
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper;
@@ -73,7 +74,7 @@ public class ErrorAnalysisEngine {
                 log.info("AI分析完成: eventId={}, duration={}ms, responseLength={}",
                         event.getId(), duration, response != null ? response.length() : 0);
 
-                AnalysisResult result = parseResponse(response);
+                AnalysisResult result = parseOrRepairResponse(response);
                 return buildEntity(result, event, prompt, response, duration);
 
             } catch (BizException e) {
@@ -159,6 +160,75 @@ public class ErrorAnalysisEngine {
             log.error("AI响应解析失败: response={}", response, e);
             throw new BizException(ResultCode.AI_PARSE_ERROR, "AI响应解析失败: " + e.getMessage());
         }
+    }
+
+    private AnalysisResult parseOrRepairResponse(String response) {
+        try {
+            return parseResponse(response);
+        } catch (BizException parseException) {
+            if (parseException.getCode() != ResultCode.AI_PARSE_ERROR.getCode()) {
+                throw parseException;
+            }
+            log.warn("AI错误分析响应不是合法 JSON，调用模型进行一次 JSON 规范化: {}", parseException.getMessage());
+            String repairedResponse = repairJsonWithAi(response);
+            try {
+                return parseResponse(repairedResponse);
+            } catch (BizException repairedParseException) {
+                log.error("AI错误分析响应经模型规范化后仍解析失败", repairedParseException);
+                throw new BizException(
+                        ResultCode.AI_PARSE_ERROR,
+                        "AI响应解析失败，模型规范化后仍不可解析: " + parseException.getMessage());
+            }
+        }
+    }
+
+    private String repairJsonWithAi(String originalResponse) {
+        try {
+            return chatClient.prompt()
+                    .user(buildJsonRepairPrompt(originalResponse))
+                    .call()
+                    .content();
+        } catch (Exception e) {
+            log.error("AI错误分析 JSON 规范化调用失败", e);
+            throw new BizException(ResultCode.AI_PARSE_ERROR, "AI响应解析失败，JSON 规范化调用失败: " + e.getMessage());
+        }
+    }
+
+    private String buildJsonRepairPrompt(String originalResponse) {
+        String compactResponse = originalResponse == null ? "" : originalResponse.trim();
+        if (compactResponse.length() > MAX_REPAIR_RESPONSE_CHARS) {
+            compactResponse = compactResponse.substring(0, MAX_REPAIR_RESPONSE_CHARS);
+        }
+        return """
+                你需要把下面这段错误分析回复转换为严格 JSON。
+
+                只允许输出一个 JSON 对象，首字符必须是 `{`，末字符必须是 `}`。
+                不允许输出 Markdown、解释、寒暄、代码块标记或任何 JSON 外文本。
+                必须修复未闭合字符串、未闭合对象、非法换行、非法转义、尾随逗号等问题。
+                如果原文缺少某些字段，请用空字符串、false 或合理默认值补齐。
+
+                JSON schema:
+                {
+                  "rootCause": "",
+                  "technicalDetail": "",
+                  "impactScope": "",
+                  "calibratedSeverity": "P3",
+                  "severityReason": "",
+                  "confidence": 0.7,
+                  "fix": {
+                    "description": "",
+                    "codeExample": "",
+                    "filePath": "",
+                    "lineRange": ""
+                  },
+                  "estimatedEffort": "",
+                  "preventionAdvice": "",
+                  "isKnownIssue": false
+                }
+
+                原回复：
+                %s
+                """.formatted(compactResponse);
     }
 
     private String textNode(JsonNode node, String field) {

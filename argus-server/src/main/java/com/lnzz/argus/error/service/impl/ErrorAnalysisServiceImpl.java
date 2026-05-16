@@ -133,10 +133,11 @@ public class ErrorAnalysisServiceImpl implements ErrorAnalysisService {
             // 6. M5-B04: 严重度 AI 校准 — 回写 ErrorEvent
             updateEventSeverity(event, analysis);
 
-            // 7. 自动推送通知
+            // 7. 自动推送通知，并把真实推送结果回写到事件状态
             ErrorEvent updatedEvent = eventMapper.selectById(eventId);
-            notificationService.sendErrorAlert(updatedEvent, analysis);
-            log.info("错误告警通知已推送: eventId={}, severity={}", eventId, updatedEvent.getSeverity());
+            boolean notified = notificationService.sendErrorAlert(updatedEvent, analysis);
+            log.info("错误告警通知判定完成: eventId={}, severity={}, notified={}",
+                    eventId, updatedEvent.getSeverity(), notified);
 
             // 7.5 M8-A01: 自动生成知识条目草稿
             try {
@@ -149,7 +150,7 @@ public class ErrorAnalysisServiceImpl implements ErrorAnalysisService {
             eventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
                     .eq(ErrorEvent::getId, eventId)
                     .set(ErrorEvent::getAnalyzed, true)
-                    .set(ErrorEvent::getNotified, true)
+                    .set(ErrorEvent::getNotified, notified)
                     .set(ErrorEvent::getProcessingStatus, determineDoneStatus(analysis)));
             finishTask(task, AnalysisTaskStatus.DONE, analysis.getId(), analysis.getAiModel(), null, startMillis);
 

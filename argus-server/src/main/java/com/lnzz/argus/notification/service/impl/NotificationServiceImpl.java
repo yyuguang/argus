@@ -1,6 +1,7 @@
 package com.lnzz.argus.notification.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.alibaba.fastjson2.JSON;
 import com.lnzz.argus.config.NotificationProperties;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
@@ -104,52 +105,59 @@ public class NotificationServiceImpl implements NotificationService {
                 : ReviewConfig.defaults().getNotification().getScoreAlertThreshold();
         String channel = (!score.isPassed() || score.getTotalScore() <= threshold) ? "critical" : "default";
         return sendWithRetry(channel, content, "REVIEW", task.getId(), "REVIEW_TASK",
-                scmConfig.getWechatNotifyWebhook());
+                scmConfig.getWechatNotifyWebhook(), resolveRetryConfig(reviewConfig));
     }
 
     // ======================== 错误告警 ========================
 
     @Override
-    @Async
     @Transactional(rollbackFor = Exception.class)
-    public void sendErrorAlert(ErrorEvent event, ErrorAnalysis analysis) {
+    public boolean sendErrorAlert(ErrorEvent event, ErrorAnalysis analysis) {
         if (!properties.isEnabled()) {
             log.info("通知总开关已关闭，跳过错误告警: eventId={}", event.getId());
-            return;
+            saveErrorAlertSkip(event, "通知总开关已关闭");
+            return false;
         }
-        // 路由匹配
-        NotificationRouter.RouteResult route = router.route(event);
-        if (!route.shouldNotify()) {
-            log.info("通知已路由抑制: eventId={}, severity={}, priority={}",
-                    event.getId(), event.getSeverity(), route.priority());
-            return;
-        }
-
         ScmConfig scmConfig = resolveScmConfigForError(event);
         if (scmConfig == null) {
             log.info("错误告警未找到 SCM 配置，跳过企微通知: eventId={}, appName={}",
                     event.getId(), event.getAppName());
-            return;
+            saveErrorAlertSkip(event, "未找到可用 SCM 配置: appName=" + event.getAppName());
+            return false;
+        }
+        ReviewConfig reviewConfig = resolveReviewConfig(scmConfig);
+        NotificationRouter.RouteResult route = router.route(event, reviewConfig.getNotification());
+        if (!route.shouldNotify()) {
+            log.info("SCM 通知路由抑制: eventId={}, appName={}, scmConfigId={}, severity={}, priority={}",
+                    event.getId(), event.getAppName(), scmConfig.getId(), event.getSeverity(), route.priority());
+            saveErrorAlertSkip(event, "SCM 通知路由抑制: scmConfigId=" + scmConfig.getId()
+                    + ", severity=" + event.getSeverity()
+                    + ", priority=" + route.priority());
+            return false;
         }
         if (!scmConfig.isWechatNotificationEnabled()) {
             log.info("SCM 配置已关闭企业微信通知，跳过错误告警: eventId={}, appName={}, scmConfigId={}",
                     event.getId(), event.getAppName(), scmConfig.getId());
-            return;
+            saveErrorAlertSkip(event, "SCM 配置已关闭企业微信通知: scmConfigId=" + scmConfig.getId());
+            return false;
         }
         if (isBlank(scmConfig.getWechatNotifyWebhook())) {
             log.info("SCM 配置未配置企业微信 webhook，跳过错误告警: eventId={}, appName={}, scmConfigId={}",
                     event.getId(), event.getAppName(), scmConfig.getId());
-            return;
+            saveErrorAlertSkip(event, "SCM 配置未配置企业微信 webhook: scmConfigId=" + scmConfig.getId());
+            return false;
         }
 
         // 静默检查
         if (isSilenced(event)) {
             log.info("通知已静默抑制: eventId={}, fingerprint={}", event.getId(), event.getErrorFingerprint());
-            return;
+            saveErrorAlertSkip(event, "通知静默抑制: fingerprint=" + event.getErrorFingerprint());
+            return false;
         }
         if (!checkGlobalRate()) {
             log.warn("全局通知频率超限，延迟通知: eventId={}", event.getId());
-            return;
+            saveErrorAlertSkip(event, "全局通知频率超限");
+            return false;
         }
 
         // 构建告警内容
@@ -162,7 +170,8 @@ public class NotificationServiceImpl implements NotificationService {
 
         // 企微通道
         boolean wechatOk = sendWithRetry(route.channel(), content, "ERROR_ALERT",
-                event.getId(), "ERROR_EVENT", scmConfig.getWechatNotifyWebhook());
+                event.getId(), "ERROR_EVENT", scmConfig.getWechatNotifyWebhook(),
+                resolveRetryConfig(reviewConfig));
 
         // 飞书通道（预留）
         if (properties.getFeishu().isEnabled()) {
@@ -182,9 +191,12 @@ public class NotificationServiceImpl implements NotificationService {
             }
         }
 
-        markSilenced(event);
-        log.info("错误告警通知完成: eventId={}, channel={}, detailed={}",
-                event.getId(), route.channel(), isDetailed);
+        if (wechatOk) {
+            markSilenced(event);
+        }
+        log.info("错误告警通知完成: eventId={}, channel={}, detailed={}, sent={}",
+                event.getId(), route.channel(), isDetailed, wechatOk);
+        return wechatOk;
     }
 
     @Override
@@ -208,24 +220,41 @@ public class NotificationServiceImpl implements NotificationService {
 
     private boolean sendWithRetry(String channel, String content,
                                    String type, Long refId, String refType,
-                                   String customWebhookUrl) {
+                                   String customWebhookUrl,
+                                   ReviewConfig.NotificationRetryConfig retryConfig) {
         if (!properties.isEnabled()) {
             log.info("通知总开关已关闭，跳过发送: type={}, refId={}", type, refId);
+            saveRecord(type, refId, refType, "通知总开关已关闭",
+                    NotificationStatus.SKIPPED.getCode(), 0, "通知总开关已关闭", null);
             return false;
         }
         if (isBlank(customWebhookUrl)) {
             log.info("未配置 SCM 企业微信 webhook，跳过发送: type={}, refId={}, channel={}", type, refId, channel);
+            saveRecord(type, refId, refType, "未配置 SCM 企业微信 webhook",
+                    NotificationStatus.SKIPPED.getCode(), 0, "未配置 SCM 企业微信 webhook", null);
             return false;
         }
-        int maxRetries = properties.getRetry().getMaxRetries();
-        var backoffSeconds = properties.getRetry().getBackoffSeconds();
+        ReviewConfig.NotificationRetryConfig effectiveRetry = retryConfig != null
+                ? retryConfig
+                : ReviewConfig.defaults().getNotification().getRetry();
+        int maxRetries = Math.max(0, effectiveRetry.getMaxRetries());
+        var backoffSeconds = effectiveRetry.getBackoffSeconds() != null
+                ? effectiveRetry.getBackoffSeconds()
+                : ReviewConfig.defaults().getNotification().getRetry().getBackoffSeconds();
+        int timeoutSec = Math.max(1, effectiveRetry.getTimeoutSec());
+        long deadlineMillis = System.currentTimeMillis() + timeoutSec * 1000L;
         Exception lastException = null;
 
         for (int attempt = 0; attempt <= maxRetries; attempt++) {
             if (attempt > 0) {
                 int delay = attempt <= backoffSeconds.size()
-                        ? backoffSeconds.get(attempt - 1) : 300;
-                log.info("通知重试: attempt={}/{}, delay={}s", attempt, maxRetries, delay);
+                        ? Math.max(0, backoffSeconds.get(attempt - 1)) : 300;
+                if (System.currentTimeMillis() + delay * 1000L > deadlineMillis) {
+                    log.warn("通知重试超时窗口不足，停止重试: type={}, refId={}, attempt={}, timeoutSec={}",
+                            type, refId, attempt, timeoutSec);
+                    break;
+                }
+                log.info("通知重试: attempt={}/{}, delay={}s, timeoutSec={}", attempt, maxRetries, delay, timeoutSec);
                 try {
                     Thread.sleep(delay * 1000L);
                 } catch (InterruptedException e) {
@@ -252,6 +281,15 @@ public class NotificationServiceImpl implements NotificationService {
         return false;
     }
 
+    private ReviewConfig.NotificationRetryConfig resolveRetryConfig(ReviewConfig reviewConfig) {
+        ReviewConfig.NotificationConfig notificationConfig = reviewConfig != null
+                ? reviewConfig.getNotification()
+                : ReviewConfig.defaults().getNotification();
+        return notificationConfig != null
+                ? notificationConfig.getRetry()
+                : ReviewConfig.defaults().getNotification().getRetry();
+    }
+
     private ScmConfig resolveScmConfigForError(ErrorEvent event) {
         if (event == null || isBlank(event.getAppName())) {
             return null;
@@ -267,6 +305,20 @@ public class NotificationServiceImpl implements NotificationService {
                 .eq(ScmConfig::getScmProvider, mapping.getScmProvider())
                 .eq(ScmConfig::getEnabled, true)
                 .last("LIMIT 1"));
+    }
+
+    private ReviewConfig resolveReviewConfig(ScmConfig scmConfig) {
+        ReviewConfig defaults = ReviewConfig.defaults();
+        if (scmConfig == null || isBlank(scmConfig.getReviewConfig())) {
+            return defaults;
+        }
+        try {
+            return defaults.merge(JSON.parseObject(scmConfig.getReviewConfig(), ReviewConfig.class));
+        } catch (Exception e) {
+            log.warn("SCM reviewConfig 解析失败，使用默认通知路由: scmConfigId={}, error={}",
+                    scmConfig.getId(), e.getMessage());
+            return defaults;
+        }
     }
 
     private boolean isBlank(String value) {
@@ -342,22 +394,55 @@ public class NotificationServiceImpl implements NotificationService {
 
     private void saveRecord(String type, Long refId, String refType,
                              String content, boolean success, int retryCount) {
+        saveRecord(type, refId, refType, content,
+                success ? NotificationStatus.SENT.getCode() : NotificationStatus.FAILED.getCode(),
+                retryCount,
+                !success && retryCount > 0 ? "重试 " + retryCount + " 次后失败" : null,
+                success ? LocalDateTime.now() : null);
+    }
+
+    private void saveErrorAlertSkip(ErrorEvent event, String reason) {
+        Long eventId = event == null ? null : event.getId();
+        String summary = buildErrorAlertSkipSummary(event, reason);
+        saveRecord("ERROR_ALERT", eventId, "ERROR_EVENT", summary,
+                NotificationStatus.SKIPPED.getCode(), 0, reason, null);
+    }
+
+    private String buildErrorAlertSkipSummary(ErrorEvent event, String reason) {
+        if (event == null) {
+            return "错误告警通知跳过: " + reason;
+        }
+        return "错误告警通知跳过: eventId=" + event.getId()
+                + ", appName=" + event.getAppName()
+                + ", severity=" + event.getSeverity()
+                + ", errorType=" + event.getErrorType()
+                + ", reason=" + reason;
+    }
+
+    private void saveRecord(String type, Long refId, String refType,
+                             String content, String status, int retryCount,
+                             String errorMessage, LocalDateTime sentAt) {
         try {
             NotificationRecord record = new NotificationRecord();
             record.setType(type);
             record.setChannel("WECHAT");
             record.setRefId(refId);
             record.setRefType(refType);
-            record.setContentSummary(content.substring(0, Math.min(content.length(), 500)));
-            record.setStatus(success ? NotificationStatus.SENT.getCode() : NotificationStatus.FAILED.getCode());
+            record.setContentSummary(abbreviate(content, 500));
+            record.setStatus(status);
             record.setRetryCount(retryCount);
-            if (!success && retryCount > 0) {
-                record.setErrorMessage("重试 " + retryCount + " 次后失败");
-            }
-            record.setSentAt(success ? LocalDateTime.now() : null);
+            record.setErrorMessage(abbreviate(errorMessage, 500));
+            record.setSentAt(sentAt);
             recordMapper.insert(record);
         } catch (Exception e) {
             log.error("保存通知记录失败: type={}, refId={}", type, refId, e);
         }
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 }

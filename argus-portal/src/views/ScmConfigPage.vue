@@ -518,6 +518,89 @@
                 <el-input-number v-model="form.reviewConfig.notification.scoreAlertThreshold" :min="0" :max="100" controls-position="right" />
               </el-form-item>
             </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                <h3>通知重试策略</h3>
+                <p>控制企业微信发送失败后的重试次数、退避间隔和总超时窗口。</p>
+              </div>
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <el-form-item label="最大重试次数">
+                    <el-input-number
+                      v-model="form.reviewConfig.notification.retry.maxRetries"
+                      :min="0"
+                      :max="10"
+                      controls-position="right"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="总超时秒数">
+                    <el-input-number
+                      v-model="form.reviewConfig.notification.retry.timeoutSec"
+                      :min="1"
+                      :max="3600"
+                      controls-position="right"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="退避秒数">
+                    <el-select
+                      v-model="form.reviewConfig.notification.retry.backoffSeconds"
+                      multiple
+                      filterable
+                      allow-create
+                      default-first-option
+                      style="width: 100%"
+                    >
+                      <el-option v-for="item in retryBackoffOptions" :key="item" :label="`${item}s`" :value="item" />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                <h3>错误日志告警路由</h3>
+                <p>控制错误分析完成后各等级是否推送企业微信，保存后立即跟随当前 SCM 配置生效。</p>
+              </div>
+              <el-table :data="errorSeverityOptions" border class="route-table">
+                <el-table-column label="等级" width="110">
+                  <template #default="{ row }">
+                    <el-tag :type="row.type" effect="light">{{ row.value }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="label" label="说明" min-width="150" />
+                <el-table-column label="是否推送" min-width="150">
+                  <template #default="{ row }">
+                    <el-switch
+                      v-model="form.reviewConfig.notification.errorAlertRoutes[row.value].enabled"
+                      active-text="推送"
+                      inactive-text="抑制"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="通道" min-width="150">
+                  <template #default="{ row }">
+                    <el-select v-model="form.reviewConfig.notification.errorAlertRoutes[row.value].channel">
+                      <el-option v-for="item in errorRouteChannelOptions" :key="item.value" :label="item.label" :value="item.value" />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column label="优先级" min-width="150">
+                  <template #default="{ row }">
+                    <el-select v-model="form.reviewConfig.notification.errorAlertRoutes[row.value].priority">
+                      <el-option v-for="item in errorRoutePriorityOptions" :key="item.value" :label="item.label" :value="item.value" />
+                    </el-select>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
           </el-tab-pane>
 
           <el-tab-pane name="linkage">
@@ -740,6 +823,27 @@ const dimensionFields = [
   { key: 'maintainability', label: '可维护性' },
 ]
 
+const errorSeverityOptions = [
+  { value: 'P0', label: '核心故障', type: 'danger' },
+  { value: 'P1', label: '高风险错误', type: 'danger' },
+  { value: 'P2', label: '普通错误', type: 'warning' },
+  { value: 'P3', label: '低风险聚合', type: 'info' },
+]
+
+const errorRouteChannelOptions = [
+  { label: '关键通道', value: 'critical' },
+  { label: '默认通道', value: 'default' },
+]
+
+const errorRoutePriorityOptions = [
+  { label: '紧急', value: 'urgent' },
+  { label: '普通', value: 'normal' },
+  { label: '低优先级', value: 'low' },
+  { label: '抑制', value: 'suppress' },
+]
+
+const retryBackoffOptions = [0, 5, 10, 30, 60, 120, 300]
+
 const argusExample = {
   basePackages: '["com.lnzz.argus"]',
   moduleSourceRoots: '["argus-common/src/main/java","argus-server/src/main/java"]',
@@ -766,6 +870,7 @@ const detailVisible = ref(false)
 const detailConfig = ref(null)
 const formRef = ref()
 const router = useRouter()
+const mappingEdits = reactive({})
 
 const filters = reactive({
   provider: '',
@@ -787,7 +892,7 @@ const currentMappings = computed(() => {
   if (!canEditMappings.value) return []
   const matched = projectMappings.value
     .filter((item) => isMappingForConfig(item, form))
-    .map((item) => ({ ...item, __editing: false }))
+    .map((item) => mappingEdits[item.id] || { ...item, __editing: false })
   return [...mappingDrafts.value, ...matched]
 })
 
@@ -900,6 +1005,17 @@ function defaultReviewConfig() {
       scoreAlertThreshold: 60,
       scoreAlertChannels: ['wechat'],
       wechatNotifyEnabled: true,
+      retry: {
+        maxRetries: 3,
+        backoffSeconds: [30, 120, 300],
+        timeoutSec: 600,
+      },
+      errorAlertRoutes: {
+        P0: { enabled: true, channel: 'critical', priority: 'urgent' },
+        P1: { enabled: true, channel: 'critical', priority: 'urgent' },
+        P2: { enabled: true, channel: 'default', priority: 'normal' },
+        P3: { enabled: false, channel: 'default', priority: 'low' },
+      },
     },
   }
 }
@@ -936,11 +1052,16 @@ function resetForm() {
   advancedReviewConfigJson.value = JSON.stringify(form.reviewConfig, null, 2)
 }
 
+function clearMappingEdits() {
+  Object.keys(mappingEdits).forEach((key) => delete mappingEdits[key])
+}
+
 function openCreateDrawer() {
   drawerMode.value = 'create'
   editingId.value = null
   activeTab.value = 'basic'
   mappingDrafts.value = []
+  clearMappingEdits()
   resetForm()
   drawerVisible.value = true
 }
@@ -950,6 +1071,7 @@ function openEditDrawer(item) {
   editingId.value = item.id
   activeTab.value = 'basic'
   mappingDrafts.value = []
+  clearMappingEdits()
   assignFormFromConfig(item)
   drawerVisible.value = true
 }
@@ -1014,7 +1136,7 @@ function deepMerge(base, override) {
 }
 
 function normalizePayload() {
-  const reviewConfig = advancedJsonEditing.value ? parseAdvancedJson() : form.reviewConfig
+  const reviewConfig = normalizeReviewConfigForSubmit(advancedJsonEditing.value ? parseAdvancedJson() : form.reviewConfig)
   return {
     scmProvider: form.scmProvider,
     projectId: form.projectId === '' ? null : form.projectId,
@@ -1037,6 +1159,28 @@ function normalizePayload() {
     wechatNotifyWebhook: form.wechatNotifyWebhook || null,
     reviewConfig: JSON.stringify(reviewConfig),
   }
+}
+
+function normalizeReviewConfigForSubmit(config) {
+  const normalized = deepMerge(defaultReviewConfig(), config || {})
+  const retry = normalized.notification.retry || {}
+  retry.maxRetries = clampInteger(retry.maxRetries, 0, 10, 3)
+  retry.timeoutSec = clampInteger(retry.timeoutSec, 1, 3600, 600)
+  retry.backoffSeconds = (Array.isArray(retry.backoffSeconds) ? retry.backoffSeconds : [])
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item >= 0)
+    .map((item) => Math.floor(item))
+  if (!retry.backoffSeconds.length && retry.maxRetries > 0) {
+    retry.backoffSeconds = [30, 120, 300]
+  }
+  normalized.notification.retry = retry
+  return normalized
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(number)))
 }
 
 function parseAdvancedJson() {
@@ -1067,9 +1211,14 @@ function validatePayload(payload) {
   validateJsonField(payload.moduleSourceRoots, '模块源码根列表')
   validateJsonField(payload.packageModuleMappings, '包到模块映射')
 
-  const trigger = JSON.parse(payload.reviewConfig).trigger
+  const parsedReviewConfig = JSON.parse(payload.reviewConfig)
+  const trigger = parsedReviewConfig.trigger
   if (trigger.branchMode === 'SOURCE_AND_TARGET' && (!trigger.sourceBranches || !trigger.sourceBranches.length)) {
     throw new Error('分支模式为“源 + 目标”时，源分支不能为空')
+  }
+  const retry = parsedReviewConfig.notification?.retry || {}
+  if (retry.maxRetries > 0 && (!retry.backoffSeconds || !retry.backoffSeconds.length)) {
+    throw new Error('通知重试次数大于 0 时，退避秒数不能为空')
   }
 }
 
@@ -1112,6 +1261,7 @@ async function loadConfigs() {
     const [scmData, mappingData] = await Promise.all([fetchScmConfigs(), fetchProjectMappings()])
     configs.value = scmData || []
     projectMappings.value = mappingData || []
+    clearMappingEdits()
   } catch (error) {
     errorMessage.value = error.message || '加载 SCM 配置失败'
   } finally {
@@ -1310,8 +1460,15 @@ function addMappingDraft() {
 }
 
 function editMapping(row) {
-  row.__editing = true
-  row.__snapshot = { ...row }
+  if (row.__draft) {
+    row.__editing = true
+    return
+  }
+  mappingEdits[row.id] = {
+    ...row,
+    __editing: true,
+    __snapshot: { ...row },
+  }
 }
 
 function cancelMapping(row) {
@@ -1319,7 +1476,7 @@ function cancelMapping(row) {
     mappingDrafts.value = mappingDrafts.value.filter((item) => item !== row)
     return
   }
-  Object.assign(row, row.__snapshot || {}, { __editing: false, __snapshot: null })
+  delete mappingEdits[row.id]
 }
 
 async function saveMapping(row) {
@@ -1340,6 +1497,7 @@ async function saveMapping(row) {
     } else {
       await updateProjectMapping(row.id, payload)
       ElMessage.success('应用映射已更新')
+      delete mappingEdits[row.id]
     }
     await loadConfigs()
   } catch (error) {

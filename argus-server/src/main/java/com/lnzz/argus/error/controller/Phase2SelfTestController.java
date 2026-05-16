@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/internal/self-test/phase2")
 public class Phase2SelfTestController {
 
-    @Value("${argus.internal.token:argus-internal-token-change-me}")
+    @Value("${argus.internal.token:argustest}")
     private String internalToken;
 
     @GetMapping("/bug")

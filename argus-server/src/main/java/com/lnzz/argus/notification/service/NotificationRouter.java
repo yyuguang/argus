@@ -1,9 +1,7 @@
 package com.lnzz.argus.notification.service;
 
-import com.lnzz.argus.config.NotificationProperties;
-import com.lnzz.argus.config.NotificationProperties.RouteRule;
 import com.lnzz.argus.error.entity.ErrorEvent;
-import lombok.RequiredArgsConstructor;
+import com.lnzz.argus.review.config.ReviewConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -16,10 +14,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class NotificationRouter {
-
-    private final NotificationProperties properties;
 
     /**
      * 路由结果
@@ -34,55 +29,48 @@ public class NotificationRouter {
      * @return RouteResult 含目标通道、优先级、是否发送
      */
     public RouteResult route(ErrorEvent event) {
-        if (!properties.isEnabled()) {
-            return RouteResult.SUPPRESS;
-        }
+        return route(event, ReviewConfig.defaults().getNotification());
+    }
 
+    /**
+     * 使用前端 SCM 配置中的错误告警路由策略匹配通知通道。
+     */
+    public RouteResult route(ErrorEvent event, ReviewConfig.NotificationConfig notificationConfig) {
         String severity = event.getSeverity();
-        String errorType = event.getErrorType();
-        String sourceType = event.getSourceType();
+        ReviewConfig.NotificationConfig effectiveConfig = notificationConfig != null
+                ? notificationConfig
+                : ReviewConfig.defaults().getNotification();
+        ReviewConfig.ErrorAlertRouteConfig route = resolveRouteConfig(severity, effectiveConfig);
+        boolean shouldNotify = route.isEnabled() && !"suppress".equalsIgnoreCase(route.getPriority());
+        log.debug("SCM 通知路由匹配: severity={}, channel={}, priority={}, shouldNotify={}",
+                severity, route.getChannel(), route.getPriority(), shouldNotify);
+        return new RouteResult(defaultIfBlank(route.getChannel(), "default"),
+                defaultIfBlank(route.getPriority(), "normal"), shouldNotify);
+    }
 
-        // 1. 精确匹配路由规则
-        if (properties.getRouteRules() != null) {
-            for (RouteRule rule : properties.getRouteRules()) {
-                if (matches(rule, severity, errorType, sourceType)) {
-                    log.debug("路由规则匹配: severity={}, errorType={}, channel={}, priority={}",
-                            severity, errorType, rule.getChannel(), rule.getPriority());
-                    return new RouteResult(
-                            rule.getChannel() != null ? rule.getChannel() : properties.getDefaultChannel(),
-                            rule.getPriority() != null ? rule.getPriority() : "normal",
-                            !"suppress".equals(rule.getPriority())
-                    );
-                }
+    private ReviewConfig.ErrorAlertRouteConfig resolveRouteConfig(String severity,
+                                                                  ReviewConfig.NotificationConfig notificationConfig) {
+        String normalizedSeverity = defaultIfBlank(severity, "DEFAULT").toUpperCase();
+        if (notificationConfig.getErrorAlertRoutes() != null) {
+            ReviewConfig.ErrorAlertRouteConfig route = notificationConfig.getErrorAlertRoutes().get(normalizedSeverity);
+            if (route != null) {
+                return route;
             }
         }
 
-        // 2. 默认路由: 按严重度
-        return defaultRoute(severity);
+        return defaultRoute(normalizedSeverity);
     }
 
-    private RouteResult defaultRoute(String severity) {
-        if (severity == null) {
-            return new RouteResult(properties.getDefaultChannel(), "normal", true);
-        }
+    private ReviewConfig.ErrorAlertRouteConfig defaultRoute(String severity) {
         return switch (severity) {
-            case "P0", "P1" -> new RouteResult("critical", "urgent", true);
-            case "P2" -> new RouteResult(properties.getDefaultChannel(), "normal", true);
-            case "P3" -> new RouteResult(properties.getDefaultChannel(), "low", false);
-            default -> new RouteResult(properties.getDefaultChannel(), "normal", true);
+            case "P0", "P1" -> new ReviewConfig.ErrorAlertRouteConfig(true, "critical", "urgent");
+            case "P2" -> new ReviewConfig.ErrorAlertRouteConfig(true, "default", "normal");
+            case "P3" -> new ReviewConfig.ErrorAlertRouteConfig(false, "default", "low");
+            default -> new ReviewConfig.ErrorAlertRouteConfig(true, "default", "normal");
         };
     }
 
-    private boolean matches(RouteRule rule, String severity, String errorType, String sourceType) {
-        if (rule.getSeverity() != null && !rule.getSeverity().isEmpty()) {
-            if (!rule.getSeverity().equalsIgnoreCase(severity)) return false;
-        }
-        if (rule.getErrorType() != null && !rule.getErrorType().isEmpty()) {
-            if (errorType == null || !errorType.contains(rule.getErrorType())) return false;
-        }
-        if (rule.getSourceType() != null && !rule.getSourceType().isEmpty()) {
-            if (sourceType == null || !sourceType.equalsIgnoreCase(rule.getSourceType())) return false;
-        }
-        return true;
+    private String defaultIfBlank(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
     }
 }

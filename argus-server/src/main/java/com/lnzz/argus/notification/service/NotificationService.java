@@ -39,7 +39,7 @@ public interface NotificationService {
                                    ScmConfig scmConfig, ReviewConfig reviewConfig);
 
     /**
-     * 发送错误告警通知（完整链路，异步）
+     * 发送错误告警通知（完整链路）
      * <p>处理流程：路由匹配 → 静默检查 → 模板构建 → 企微发送 → 飞书/钉钉（预留） → 记录落库</p>
      * <p>静默规则：</p>
      * <ul>
@@ -52,8 +52,9 @@ public interface NotificationService {
      *
      * @param event    错误事件（含严重度、错误类型、指纹等路由和静默决策所需字段）
      * @param analysis AI 分析结果（含根因、修复建议、置信度等）
+     * @return true 已发送成功，false 未满足发送条件或发送失败
      */
-    void sendErrorAlert(ErrorEvent event, ErrorAnalysis analysis);
+    boolean sendErrorAlert(ErrorEvent event, ErrorAnalysis analysis);
 
     /**
      * 兼容旧接口的错误告警（异步）

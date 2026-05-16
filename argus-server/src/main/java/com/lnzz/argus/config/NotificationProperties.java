@@ -4,7 +4,6 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,9 +20,6 @@ public class NotificationProperties {
     /** 是否启用通知 */
     private boolean enabled = true;
 
-    /** 默认通道 */
-    private String defaultChannel = "wechat";
-
     /** 企业微信配置 */
     private WechatConfig wechat = new WechatConfig();
 
@@ -33,14 +29,8 @@ public class NotificationProperties {
     /** 钉钉配置（预留） */
     private DingTalkConfig dingtalk = new DingTalkConfig();
 
-    /** 通知路由规则 */
-    private List<RouteRule> routeRules = List.of();
-
     /** 静默配置 */
     private SilenceConfig silence = new SilenceConfig();
-
-    /** 重试配置 */
-    private RetryConfig retry = new RetryConfig();
 
     @Data
     public static class WechatConfig {
@@ -66,23 +56,6 @@ public class NotificationProperties {
     }
 
     /**
-     * M7-A01: 通知路由规则
-     */
-    @Data
-    public static class RouteRule {
-        /** 匹配条件: 严重度 P0/P1/P2/P3 */
-        private String severity;
-        /** 匹配条件: 错误类型 (可选) */
-        private String errorType;
-        /** 匹配条件: 来源类型 AGENT/NGINX (可选) */
-        private String sourceType;
-        /** 目标通道 */
-        private String channel;
-        /** 通知级别: urgent/normal/suppress */
-        private String priority;
-    }
-
-    /**
      * M7-A05: 静默控制
      */
     @Data
@@ -97,16 +70,4 @@ public class NotificationProperties {
         private int globalMaxPerHour = 30;
     }
 
-    /**
-     * M7-A05: 重试配置
-     */
-    @Data
-    public static class RetryConfig {
-        /** 最大重试次数 */
-        private int maxRetries = 3;
-        /** 重试间隔(秒) */
-        private List<Integer> backoffSeconds = List.of(30, 120, 300);
-        /** 重试超时(秒) */
-        private int timeout = 600;
-    }
 }
