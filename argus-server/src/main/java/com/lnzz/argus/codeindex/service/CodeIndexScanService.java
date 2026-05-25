@@ -2,6 +2,7 @@ package com.lnzz.argus.codeindex.service;
 
 import com.lnzz.argus.codeindex.dto.req.CodeIndexScanReqDTO;
 import com.lnzz.argus.codeindex.dto.res.CodeIndexSummaryResDTO;
+import com.lnzz.argus.codeindex.support.CodeIndexScanExecutionContext;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.model.DiffFile;
 
@@ -25,6 +26,17 @@ public interface CodeIndexScanService {
     CodeIndexSummaryResDTO scanFull(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO);
 
     /**
+     * 执行带进度回调的全量源码索引扫描。
+     *
+     * @param scmConfig SCM 仓库配置
+     * @param requestDTO 扫描请求
+     * @param executionContext 扫描执行上下文
+     * @return 源码索引摘要
+     */
+    CodeIndexSummaryResDTO scanFull(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                    CodeIndexScanExecutionContext executionContext);
+
+    /**
      * 执行增量源码索引扫描。
      *
      * @param scmConfig SCM 仓库配置
@@ -33,6 +45,17 @@ public interface CodeIndexScanService {
      * @return 源码索引摘要
      */
     CodeIndexSummaryResDTO scanIncremental(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO, List<DiffFile> diffFiles);
+
+    /**
+     * 执行带进度回调的增量源码索引扫描。
+     *
+     * @param scmConfig SCM 仓库配置
+     * @param requestDTO 扫描请求
+     * @param executionContext 扫描执行上下文
+     * @return 源码索引摘要
+     */
+    CodeIndexSummaryResDTO scanIncremental(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                           CodeIndexScanExecutionContext executionContext);
 
     /**
      * 基于请求中的已知文件路径执行源码索引扫描。
@@ -44,6 +67,17 @@ public interface CodeIndexScanService {
     CodeIndexSummaryResDTO scanKnownFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO);
 
     /**
+     * 基于请求中的已知文件路径执行带进度回调的源码索引扫描。
+     *
+     * @param scmConfig SCM 仓库配置
+     * @param requestDTO 扫描请求
+     * @param executionContext 扫描执行上下文
+     * @return 源码索引摘要
+     */
+    CodeIndexSummaryResDTO scanKnownFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                          CodeIndexScanExecutionContext executionContext);
+
+    /**
      * 基于 Diff 文件列表执行增量扫描输入适配。
      *
      * @param scmConfig SCM 仓库配置
@@ -52,4 +86,15 @@ public interface CodeIndexScanService {
      * @return 源码索引摘要
      */
     CodeIndexSummaryResDTO scanDiffFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO, List<DiffFile> diffFiles);
+
+    /**
+     * 基于 Diff 文件列表执行带进度回调的增量扫描输入适配。
+     *
+     * @param scmConfig SCM 仓库配置
+     * @param requestDTO 扫描请求
+     * @param executionContext 扫描执行上下文
+     * @return 源码索引摘要
+     */
+    CodeIndexSummaryResDTO scanDiffFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                         CodeIndexScanExecutionContext executionContext);
 }

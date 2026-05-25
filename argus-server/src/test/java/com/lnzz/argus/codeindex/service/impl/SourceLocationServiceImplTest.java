@@ -16,6 +16,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -144,6 +147,41 @@ class SourceLocationServiceImplTest {
         verify(classIndexMapper, never()).selectByQualifiedName(99L, "com.example.DemoService");
     }
 
+    @Test
+    @DisplayName("强制重建失败快照存在时应继续使用默认分支旧成功索引兜底")
+    void locateShouldFallbackToLatestSuccessWhenRebuildFailedIndexExists() {
+        SourceLocateReqDTO requestDTO = request();
+        CodeRepositoryIndex failedIndex = index(400L, "abc123");
+        failedIndex.setScanStatus(CodeIndexConstants.ScanStatus.FAILED);
+        CodeRepositoryIndex latestSuccess = index(300L, "old-success");
+        CodeClassIndex classIndex = classIndex("com.example.DemoService",
+                "stable/src/main/java/com/example/DemoService.java");
+        when(repositoryIndexMapper.selectByCommit(1L, "abc123", CodeIndexConstants.CURRENT_INDEX_VERSION))
+                .thenReturn(failedIndex);
+        when(repositoryIndexMapper.selectLatestSuccessful(1L, "main")).thenReturn(latestSuccess);
+        when(classIndexMapper.selectByQualifiedName(300L, "com.example.DemoService")).thenReturn(List.of(classIndex));
+
+        SourceLocateResDTO response = service.locate(requestDTO);
+
+        assertTrue(response.getMatched());
+        assertEquals(300L, response.getIndexId());
+        assertEquals("old-success", response.getCommitSha());
+        assertEquals("stable/src/main/java/com/example/DemoService.java", response.getFilePath());
+        assertTrue(response.getWarnings().stream().anyMatch(warning -> warning.contains("未找到 commit")));
+        verify(classIndexMapper, never()).selectByQualifiedName(400L, "com.example.DemoService");
+    }
+
+    @Test
+    @DisplayName("ReviewExecutor 旧同步索引准备不应依赖扫描任务表")
+    void reviewExecutorShouldNotDependOnScanTaskTable() throws IOException {
+        String source = Files.readString(resolveReviewExecutorPath());
+
+        assertTrue(source.contains("CodeIndexScanService"));
+        assertTrue(source.contains("scanIncremental"));
+        assertFalse(source.contains("CodeIndexScanTask"));
+        assertFalse(source.contains("argus_code_index_scan_task"));
+    }
+
     private SourceLocateReqDTO request() {
         SourceLocateReqDTO requestDTO = new SourceLocateReqDTO();
         requestDTO.setScmConfigId(1L);
@@ -210,5 +248,13 @@ class SourceLocationServiceImplTest {
     private String sourceRoot(String filePath) {
         int javaIndex = filePath.indexOf("/java/");
         return javaIndex > 0 ? filePath.substring(0, javaIndex + "/java".length()) : "src/main/java";
+    }
+
+    private Path resolveReviewExecutorPath() {
+        Path modulePath = Path.of("src/main/java/com/lnzz/argus/review/service/ReviewExecutor.java");
+        if (Files.exists(modulePath)) {
+            return modulePath;
+        }
+        return Path.of("argus-server/src/main/java/com/lnzz/argus/review/service/ReviewExecutor.java");
     }
 }

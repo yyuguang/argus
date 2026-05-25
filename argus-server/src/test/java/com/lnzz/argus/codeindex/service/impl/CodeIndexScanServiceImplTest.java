@@ -5,6 +5,8 @@ import com.lnzz.argus.codeindex.dto.res.CodeIndexSummaryResDTO;
 import com.lnzz.argus.codeindex.scanner.RepositoryCodeIndexDraft;
 import com.lnzz.argus.codeindex.service.CodeIndexService;
 import com.lnzz.argus.codeindex.support.CodeIndexConstants;
+import com.lnzz.argus.codeindex.support.CodeIndexScanExecutionContext;
+import com.lnzz.argus.codeindex.support.CodeIndexScanProgressCallback;
 import com.lnzz.argus.codeindex.support.ScmCodeIndexFileReader;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
@@ -20,10 +22,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -90,6 +94,54 @@ class CodeIndexScanServiceImplTest {
         CodeIndexSummaryResDTO response = service.scanKnownFiles(scmConfig(), requestDTO);
 
         assertEquals(CodeIndexConstants.ScanStatus.FAILED, response.getScanStatus());
+        verify(codeIndexService).markScanFailed(eq(scmConfig()), eq(requestDTO), any());
+        verify(codeIndexService, never()).saveSuccessfulIndex(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("带回调扫描会按阶段顺序上报进度并在成功后上报索引结果")
+    void scanKnownFilesShouldReportProgressStages() {
+        CodeIndexScanReqDTO requestDTO = request(List.of(
+                "pom.xml",
+                "src/main/java/com/example/DemoService.java"
+        ));
+        CodeIndexSummaryResDTO expected = summary(CodeIndexConstants.ScanStatus.SUCCESS);
+        expected.setIndexId(9001L);
+        when(codeIndexService.saveSuccessfulIndex(eq(scmConfig()), any(CodeIndexScanReqDTO.class), any(RepositoryCodeIndexDraft.class)))
+                .thenReturn(expected);
+        RecordingProgressCallback callback = new RecordingProgressCallback();
+
+        CodeIndexSummaryResDTO response = service.scanKnownFiles(scmConfig(), requestDTO,
+                CodeIndexScanExecutionContext.progress(1001L, callback));
+
+        assertEquals(CodeIndexConstants.ScanStatus.SUCCESS, response.getScanStatus());
+        assertEquals(List.of(
+                CodeIndexConstants.ScanStage.SCM_READING,
+                CodeIndexConstants.ScanStage.MODULE_SCANNING,
+                CodeIndexConstants.ScanStage.SOURCE_ROOT_DISCOVERING,
+                CodeIndexConstants.ScanStage.JAVA_PARSING,
+                CodeIndexConstants.ScanStage.INDEX_PERSISTING
+        ), callback.stageEvents());
+        assertTrue(callback.events().contains("file:1001:2"));
+        assertTrue(callback.events().contains("java:1001:1/1/0"));
+        assertTrue(callback.events().contains("persist:1001:1/1/0"));
+        assertTrue(callback.events().contains("success:1001:9001:1/1/0"));
+    }
+
+    @Test
+    @DisplayName("带回调扫描失败时会上报失败原因且不保存成功索引")
+    void scanKnownFilesShouldReportFailure() {
+        CodeIndexScanReqDTO requestDTO = request(List.of("src/main/java/com/example/DemoService.java"));
+        CodeIndexSummaryResDTO failed = summary(CodeIndexConstants.ScanStatus.FAILED);
+        when(codeIndexService.markScanFailed(eq(scmConfig()), eq(requestDTO), any())).thenReturn(failed);
+        RecordingProgressCallback callback = new RecordingProgressCallback();
+
+        CodeIndexSummaryResDTO response = service.scanKnownFiles(scmConfig(), requestDTO,
+                CodeIndexScanExecutionContext.progress(1002L, callback));
+
+        assertEquals(CodeIndexConstants.ScanStatus.FAILED, response.getScanStatus());
+        assertTrue(callback.events().stream()
+                .anyMatch(event -> event.startsWith("failure:1002:未识别到 Maven 模块")));
         verify(codeIndexService).markScanFailed(eq(scmConfig()), eq(requestDTO), any());
         verify(codeIndexService, never()).saveSuccessfulIndex(any(), any(), any());
     }
@@ -219,6 +271,54 @@ class CodeIndexScanServiceImplTest {
         @Override
         public void setPullRequestLabels(ScmConfig config, ReviewTask task, List<String> labels) {
             throw new UnsupportedOperationException();
+        }
+    }
+
+    private static class RecordingProgressCallback implements CodeIndexScanProgressCallback {
+
+        private final List<String> events = new ArrayList<>();
+        private final List<String> stageEvents = new ArrayList<>();
+
+        @Override
+        public void onStageStart(Long taskId, String scanStage, String stageMessage) {
+            stageEvents.add(scanStage);
+            events.add("stage:" + taskId + ":" + scanStage + ":" + stageMessage);
+        }
+
+        @Override
+        public void onFileLoaded(Long taskId, int loadedFileCount) {
+            events.add("file:" + taskId + ":" + loadedFileCount);
+        }
+
+        @Override
+        public void onJavaParseProgress(Long taskId, int parsedFileCount, int totalJavaFileCount,
+                                        int failedFileCount) {
+            events.add("java:" + taskId + ":" + parsedFileCount + "/" + totalJavaFileCount
+                    + "/" + failedFileCount);
+        }
+
+        @Override
+        public void onPersisting(Long taskId, int classCount, int packageCount, int warningCount) {
+            events.add("persist:" + taskId + ":" + classCount + "/" + packageCount + "/" + warningCount);
+        }
+
+        @Override
+        public void onSuccess(Long taskId, Long resultIndexId, int classCount, int packageCount, int warningCount) {
+            events.add("success:" + taskId + ":" + resultIndexId + ":" + classCount + "/"
+                    + packageCount + "/" + warningCount);
+        }
+
+        @Override
+        public void onFailure(Long taskId, String errorMessage) {
+            events.add("failure:" + taskId + ":" + errorMessage);
+        }
+
+        private List<String> events() {
+            return events;
+        }
+
+        private List<String> stageEvents() {
+            return stageEvents;
         }
     }
 }

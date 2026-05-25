@@ -12,6 +12,8 @@ import com.lnzz.argus.codeindex.scanner.RepositoryCodeIndexDraft;
 import com.lnzz.argus.codeindex.service.CodeIndexScanService;
 import com.lnzz.argus.codeindex.service.CodeIndexService;
 import com.lnzz.argus.codeindex.support.CodeIndexConstants;
+import com.lnzz.argus.codeindex.support.CodeIndexScanExecutionContext;
+import com.lnzz.argus.codeindex.support.CodeIndexScanProgressCallback;
 import com.lnzz.argus.codeindex.support.ScmCodeIndexFileReader;
 import com.lnzz.argus.codeindex.support.ScmCodeIndexWorkspace;
 import com.lnzz.argus.common.request.BasePageRequest;
@@ -38,6 +40,8 @@ import java.util.Set;
 @Service
 public class CodeIndexScanServiceImpl implements CodeIndexScanService {
 
+    private static final CodeIndexScanProgressCallback NOOP_PROGRESS_CALLBACK = new NoopProgressCallback();
+
     private final CodeIndexService codeIndexService;
     private final ScmCodeIndexFileReader scmCodeIndexFileReader;
     private final MavenModuleScanner mavenModuleScanner;
@@ -52,32 +56,47 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
 
     @Override
     public CodeIndexSummaryResDTO scanFull(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO) {
+        return scanFull(scmConfig, requestDTO, CodeIndexScanExecutionContext.empty());
+    }
+
+    @Override
+    public CodeIndexSummaryResDTO scanFull(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                           CodeIndexScanExecutionContext executionContext) {
         CodeIndexScanReqDTO effectiveRequest = copyRequest(requestDTO);
         if (Boolean.TRUE.equals(effectiveRequest.getForceRebuild())) {
             effectiveRequest.setScanType(CodeIndexConstants.ScanType.REBUILD);
         } else if (!hasText(effectiveRequest.getScanType())) {
             effectiveRequest.setScanType(CodeIndexConstants.ScanType.FULL);
         }
-        return scanKnownFiles(scmConfig, effectiveRequest);
+        return scanKnownFiles(scmConfig, effectiveRequest, executionContext);
     }
 
     @Override
     public CodeIndexSummaryResDTO scanIncremental(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO, List<DiffFile> diffFiles) {
+        return scanIncremental(scmConfig, requestDTO, CodeIndexScanExecutionContext.diffFiles(diffFiles));
+    }
+
+    @Override
+    public CodeIndexSummaryResDTO scanIncremental(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                                  CodeIndexScanExecutionContext executionContext) {
         long scanStartedAt = System.currentTimeMillis();
-        CodeIndexScanReqDTO effectiveRequest = adaptDiffRequest(requestDTO, diffFiles);
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        CodeIndexScanReqDTO effectiveRequest = adaptDiffRequest(requestDTO, effectiveContext.getDiffFiles());
+        CodeIndexScanProgressCallback effectiveCallback = safeCallback(effectiveContext);
         if (!hasText(effectiveRequest.getScanType())) {
             effectiveRequest.setScanType(CodeIndexConstants.ScanType.INCREMENTAL);
         }
         log.info("源码索引增量扫描开始, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, filePathCount={}, deletedFilePathCount={}, diffFileCount={}",
                 configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), resolveRef(effectiveRequest),
                 effectiveRequest.getScanType(), safeList(effectiveRequest.getFilePaths()).size(),
-                safeList(effectiveRequest.getDeletedFilePaths()).size(), diffFiles == null ? 0 : diffFiles.size());
+                safeList(effectiveRequest.getDeletedFilePaths()).size(), safeList(effectiveContext.getDiffFiles()).size());
         try {
             RepositoryCodeIndexDraft changedDraft = effectiveRequest.getFilePaths().isEmpty()
                     ? new RepositoryCodeIndexDraft()
-                    : buildDraft(scmConfig, effectiveRequest);
+                    : buildDraft(scmConfig, effectiveRequest, effectiveContext);
             RepositoryCodeIndexDraft mergedDraft = mergeWithLatestSuccessfulIndex(scmConfig, effectiveRequest, changedDraft);
-            CodeIndexSummaryResDTO response = codeIndexService.saveSuccessfulIndex(scmConfig, effectiveRequest, mergedDraft);
+            CodeIndexSummaryResDTO response = saveSuccessfulIndex(scmConfig, effectiveRequest, mergedDraft,
+                    effectiveContext);
             log.info("源码索引增量扫描完成, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, moduleCount={}, sourceRootCount={}, javaFileCount={}, classCount={}, packageCount={}, warningCount={}, costMs={}",
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), resolveRef(effectiveRequest),
                     effectiveRequest.getScanType(), mergedDraft.getModuleCount(), mergedDraft.getSourceRootCount(),
@@ -90,21 +109,28 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
                     effectiveRequest.getScanType(), safeList(effectiveRequest.getFilePaths()).size(),
                     safeList(effectiveRequest.getDeletedFilePaths()).size(), System.currentTimeMillis() - scanStartedAt,
                     e.getMessage(), e);
-            return codeIndexService.markScanFailed(scmConfig, effectiveRequest, e.getMessage());
+            return markScanFailed(scmConfig, effectiveRequest, e, effectiveContext);
         }
     }
 
     @Override
     public CodeIndexSummaryResDTO scanKnownFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO) {
+        return scanKnownFiles(scmConfig, requestDTO, CodeIndexScanExecutionContext.empty());
+    }
+
+    @Override
+    public CodeIndexSummaryResDTO scanKnownFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                                 CodeIndexScanExecutionContext executionContext) {
         long scanStartedAt = System.currentTimeMillis();
         CodeIndexScanReqDTO effectiveRequest = requestDTO == null ? new CodeIndexScanReqDTO() : requestDTO;
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
         log.info("源码索引扫描开始, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, filePathCount={}, sourceRootOverrideCount={}",
                 configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), resolveRef(effectiveRequest),
                 effectiveRequest.getScanType(), safeList(effectiveRequest.getFilePaths()).size(),
                 safeList(effectiveRequest.getSourceRootOverrides()).size());
         try {
-            RepositoryCodeIndexDraft draft = buildDraft(scmConfig, effectiveRequest);
-            CodeIndexSummaryResDTO response = codeIndexService.saveSuccessfulIndex(scmConfig, effectiveRequest, draft);
+            RepositoryCodeIndexDraft draft = buildDraft(scmConfig, effectiveRequest, effectiveContext);
+            CodeIndexSummaryResDTO response = saveSuccessfulIndex(scmConfig, effectiveRequest, draft, effectiveContext);
             log.info("源码索引扫描完成, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, moduleCount={}, sourceRootCount={}, javaFileCount={}, classCount={}, packageCount={}, warningCount={}, costMs={}",
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), resolveRef(effectiveRequest),
                     effectiveRequest.getScanType(), draft.getModuleCount(), draft.getSourceRootCount(), draft.getJavaFileCount(),
@@ -116,25 +142,39 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), resolveRef(effectiveRequest),
                     effectiveRequest.getScanType(), safeList(effectiveRequest.getFilePaths()).size(),
                     System.currentTimeMillis() - scanStartedAt, e.getMessage(), e);
-            return codeIndexService.markScanFailed(scmConfig, effectiveRequest, e.getMessage());
+            return markScanFailed(scmConfig, effectiveRequest, e, effectiveContext);
         }
     }
 
     @Override
     public CodeIndexSummaryResDTO scanDiffFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO, List<DiffFile> diffFiles) {
-        return scanKnownFiles(scmConfig, adaptDiffRequest(requestDTO, diffFiles));
+        return scanDiffFiles(scmConfig, requestDTO, CodeIndexScanExecutionContext.diffFiles(diffFiles));
     }
 
-    private RepositoryCodeIndexDraft buildDraft(ScmConfig scmConfig, CodeIndexScanReqDTO effectiveRequest) throws IOException {
+    @Override
+    public CodeIndexSummaryResDTO scanDiffFiles(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                                CodeIndexScanExecutionContext executionContext) {
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        return scanKnownFiles(scmConfig, adaptDiffRequest(requestDTO, effectiveContext.getDiffFiles()),
+                effectiveContext);
+    }
+
+    private RepositoryCodeIndexDraft buildDraft(ScmConfig scmConfig, CodeIndexScanReqDTO effectiveRequest,
+                                                CodeIndexScanExecutionContext executionContext) throws IOException {
         long draftStartedAt = System.currentTimeMillis();
         String ref = resolveRef(effectiveRequest);
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        CodeIndexScanProgressCallback effectiveCallback = safeCallback(effectiveContext);
+        Long taskId = effectiveContext.getTaskId();
         log.info("源码索引草稿准备开始, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, requestedFilePathCount={}",
                 configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), ref,
                 effectiveRequest.getScanType(), safeList(effectiveRequest.getFilePaths()).size());
+        effectiveCallback.onStageStart(taskId, CodeIndexConstants.ScanStage.SCM_READING, "开始读取 SCM 文件");
         try (ScmCodeIndexWorkspace workspace = safeList(effectiveRequest.getFilePaths()).isEmpty()
                 ? scmCodeIndexFileReader.readRepositoryFiles(scmConfig, ref, this::shouldReadForIndex)
                 : scmCodeIndexFileReader.readKnownFiles(scmConfig, ref, effectiveRequest.getFilePaths())) {
             long fileReadFinishedAt = System.currentTimeMillis();
+            effectiveCallback.onFileLoaded(taskId, workspace.getLoadedFilePaths().size());
             log.info("源码索引 SCM 文件读取完成, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, loadedFileCount={}, failedFileCount={}, warningCount={}, costMs={}",
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), ref,
                     workspace.getLoadedFilePaths().size(), workspace.getFailedFilePaths().size(),
@@ -143,6 +183,7 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
                 throw new IllegalStateException("未读取到可扫描文件");
             }
             long moduleScanStartedAt = System.currentTimeMillis();
+            effectiveCallback.onStageStart(taskId, CodeIndexConstants.ScanStage.MODULE_SCANNING, "开始扫描 Maven 模块");
             List<ModuleScanResult> modules = mavenModuleScanner.scan(workspace.getRepositoryRoot());
             log.info("源码索引 Maven 模块扫描完成, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, moduleCount={}, costMs={}",
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), ref,
@@ -151,9 +192,14 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
                 throw new IllegalStateException("未识别到 Maven 模块，当前扫描适配需要 pom.xml 文件");
             }
             long buildStartedAt = System.currentTimeMillis();
+            effectiveCallback.onStageStart(taskId, CodeIndexConstants.ScanStage.SOURCE_ROOT_DISCOVERING,
+                    "开始发现源码根");
+            effectiveCallback.onStageStart(taskId, CodeIndexConstants.ScanStage.JAVA_PARSING, "开始解析 Java 文件");
             RepositoryCodeIndexDraft draft = codeIndexBuilder.build(
                     workspace.getRepositoryRoot(), modules, effectiveRequest.getSourceRootOverrides());
             mergeWorkspaceWarnings(draft, workspace);
+            effectiveCallback.onJavaParseProgress(taskId, safeInt(draft.getJavaFileCount()),
+                    safeInt(draft.getJavaFileCount()), countFailedJavaFiles(draft));
             log.info("源码索引草稿准备完成, scmConfigId={}, provider={}, projectId={}, repoName={}, ref={}, scanType={}, loadedFileCount={}, moduleCount={}, sourceRootCount={}, javaFileCount={}, classCount={}, packageCount={}, warningCount={}, buildCostMs={}, totalCostMs={}",
                     configId(scmConfig), provider(scmConfig), projectId(scmConfig), repoName(scmConfig), ref,
                     effectiveRequest.getScanType(), workspace.getLoadedFilePaths().size(), draft.getModuleCount(),
@@ -162,6 +208,31 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
                     System.currentTimeMillis() - draftStartedAt);
             return draft;
         }
+    }
+
+    private CodeIndexSummaryResDTO saveSuccessfulIndex(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO,
+                                                       RepositoryCodeIndexDraft draft,
+                                                       CodeIndexScanExecutionContext executionContext) {
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        CodeIndexScanProgressCallback effectiveCallback = safeCallback(effectiveContext);
+        Long taskId = effectiveContext.getTaskId();
+        int classCount = safeInt(draft.getClassCount());
+        int packageCount = safeInt(draft.getPackageCount());
+        int warningCount = safeInt(draft.getWarningCount());
+        effectiveCallback.onStageStart(taskId, CodeIndexConstants.ScanStage.INDEX_PERSISTING, "开始持久化源码索引");
+        effectiveCallback.onPersisting(taskId, classCount, packageCount, warningCount);
+        CodeIndexSummaryResDTO response = codeIndexService.saveSuccessfulIndex(scmConfig, requestDTO, draft);
+        effectiveCallback.onSuccess(taskId, response == null ? null : response.getIndexId(), classCount, packageCount,
+                warningCount);
+        return response;
+    }
+
+    private CodeIndexSummaryResDTO markScanFailed(ScmConfig scmConfig, CodeIndexScanReqDTO requestDTO, Exception exception,
+                                                 CodeIndexScanExecutionContext executionContext) {
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        String errorMessage = exception == null ? null : exception.getMessage();
+        safeCallback(effectiveContext).onFailure(effectiveContext.getTaskId(), errorMessage);
+        return codeIndexService.markScanFailed(scmConfig, requestDTO, errorMessage);
     }
 
     private CodeIndexScanReqDTO adaptDiffRequest(CodeIndexScanReqDTO requestDTO, List<DiffFile> diffFiles) {
@@ -283,6 +354,19 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
         draft.setWarningCount(draft.getWarnings().size());
     }
 
+    private int countFailedJavaFiles(RepositoryCodeIndexDraft draft) {
+        if (draft == null || draft.getClasses() == null) {
+            return 0;
+        }
+        return (int) draft.getClasses().stream()
+                .filter(classIndex -> classIndex != null)
+                .filter(classIndex -> CodeIndexConstants.ScanStatus.FAILED.equals(classIndex.getParserStatus()))
+                .map(JavaFileIndex::getFilePath)
+                .filter(this::hasText)
+                .distinct()
+                .count();
+    }
+
     private CodeIndexScanReqDTO copyRequest(CodeIndexScanReqDTO source) {
         CodeIndexScanReqDTO target = new CodeIndexScanReqDTO();
         if (source == null) {
@@ -300,12 +384,27 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
         return target;
     }
 
-    private List<String> safeList(List<String> values) {
+    private <T> List<T> safeList(List<T> values) {
         return values == null ? List.of() : values;
     }
 
     private boolean shouldReadForIndex(String filePath) {
         return filePath.endsWith(".java") || filePath.endsWith("pom.xml");
+    }
+
+    private CodeIndexScanExecutionContext safeContext(CodeIndexScanExecutionContext executionContext) {
+        return executionContext == null ? CodeIndexScanExecutionContext.empty() : executionContext;
+    }
+
+    private CodeIndexScanProgressCallback safeCallback(CodeIndexScanExecutionContext executionContext) {
+        CodeIndexScanExecutionContext effectiveContext = safeContext(executionContext);
+        return effectiveContext.getProgressCallback() == null
+                ? NOOP_PROGRESS_CALLBACK
+                : effectiveContext.getProgressCallback();
+    }
+
+    private int safeInt(Integer value) {
+        return value == null ? 0 : value;
     }
 
     private String firstText(String first, String second, String fallback) {
@@ -339,5 +438,33 @@ public class CodeIndexScanServiceImpl implements CodeIndexScanService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private static class NoopProgressCallback implements CodeIndexScanProgressCallback {
+
+        @Override
+        public void onStageStart(Long taskId, String scanStage, String stageMessage) {
+        }
+
+        @Override
+        public void onFileLoaded(Long taskId, int loadedFileCount) {
+        }
+
+        @Override
+        public void onJavaParseProgress(Long taskId, int parsedFileCount, int totalJavaFileCount,
+                                        int failedFileCount) {
+        }
+
+        @Override
+        public void onPersisting(Long taskId, int classCount, int packageCount, int warningCount) {
+        }
+
+        @Override
+        public void onSuccess(Long taskId, Long resultIndexId, int classCount, int packageCount, int warningCount) {
+        }
+
+        @Override
+        public void onFailure(Long taskId, String errorMessage) {
+        }
     }
 }
