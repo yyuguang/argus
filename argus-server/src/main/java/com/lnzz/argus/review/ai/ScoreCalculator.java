@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -43,6 +44,7 @@ public class ScoreCalculator {
             score.setCriticalCount((int) issues.stream().filter(i -> "CRITICAL".equals(i.getSeverity())).count());
             score.setMajorCount((int) issues.stream().filter(i -> "MAJOR".equals(i.getSeverity())).count());
             score.setMinorCount((int) issues.stream().filter(i -> "MINOR".equals(i.getSeverity())).count());
+            score.setSuggestionCount((int) issues.stream().filter(i -> "SUGGESTION".equals(i.getSeverity())).count());
         }
 
         // AI 维度加权总分
@@ -63,7 +65,7 @@ public class ScoreCalculator {
 
         // 等级映射 + 通过判定
         score.setScoreLevel(resolveLevel(score.getTotalScore(), sc));
-        score.setPassed(score.getTotalScore() >= sc.getBlockThreshold());
+        applyDecision(score, sc);
 
         log.info("评分计算完成: total={}, level={}, passed={}, aiWeighted={}, ruleScore={}, critical={}, major={}, minor={}",
                 score.getTotalScore(), score.getScoreLevel(), score.isPassed(),
@@ -89,6 +91,7 @@ public class ScoreCalculator {
         int totalCompliance = 0, totalCorrectness = 0, totalDataSafety = 0;
         int totalPerformance = 0, totalMaintainability = 0;
         int criticalCount = 0, majorCount = 0, minorCount = 0;
+        int suggestionCount = 0;
 
         for (ScoreResult s : scores) {
             totalCompliance += s.getComplianceScore();
@@ -99,6 +102,7 @@ public class ScoreCalculator {
             criticalCount += s.getCriticalCount();
             majorCount += s.getMajorCount();
             minorCount += s.getMinorCount();
+            suggestionCount += s.getSuggestionCount();
         }
 
         int size = scores.size();
@@ -110,6 +114,7 @@ public class ScoreCalculator {
         merged.setCriticalCount(criticalCount);
         merged.setMajorCount(majorCount);
         merged.setMinorCount(minorCount);
+        merged.setSuggestionCount(suggestionCount);
 
         ReviewConfig.ScoringConfig sc = config.getScoring();
         ReviewConfig.DimensionsConfig dims = sc.getDimensions();
@@ -122,7 +127,7 @@ public class ScoreCalculator {
         double finalScore = aiWeightedScore * sc.getAiWeight() + 100.0 * sc.getRuleWeight();
         merged.setTotalScore((int) Math.round(finalScore));
         merged.setScoreLevel(resolveLevel(merged.getTotalScore(), sc));
-        merged.setPassed(merged.getTotalScore() >= sc.getBlockThreshold());
+        applyDecision(merged, sc);
 
         return merged;
     }
@@ -140,6 +145,52 @@ public class ScoreCalculator {
             }
         }
         return total;
+    }
+
+    private void applyDecision(ScoreResult score, ReviewConfig.ScoringConfig sc) {
+        DecisionResult decision = resolveDecision(score, sc);
+        score.setPassed(decision.passed());
+        score.setDecisionReasons(decision.reasons());
+    }
+
+    private DecisionResult resolveDecision(ScoreResult score, ReviewConfig.ScoringConfig sc) {
+        List<String> reasons = new ArrayList<>();
+        ReviewConfig.BlockingRuleConfig blockingRules = sc.getBlockingRules();
+
+        boolean suggestionOnly =
+                score.getSuggestionCount() > 0
+                        && score.getCriticalCount() == 0
+                        && score.getMajorCount() == 0
+                        && score.getMinorCount() == 0;
+        boolean suggestionBypass =
+                score.getTotalScore() < sc.getBlockThreshold()
+                        && suggestionOnly
+                        && !Boolean.TRUE.equals(blockingRules.getSuggestionOnlyBlockEnabled());
+
+        if (score.getTotalScore() < sc.getBlockThreshold() && !suggestionBypass) {
+            reasons.add(String.format("总分 %d 低于阻断阈值 %d", score.getTotalScore(), sc.getBlockThreshold()));
+        }
+        if (Boolean.TRUE.equals(blockingRules.getCriticalDirectBlock()) && score.getCriticalCount() > 0) {
+            reasons.add(String.format("存在 %d 个 CRITICAL 问题，触发直接阻断", score.getCriticalCount()));
+        }
+
+        Integer majorBlockThreshold = blockingRules.getMajorBlockThreshold();
+        if (majorBlockThreshold != null
+                && majorBlockThreshold > 0
+                && score.getMajorCount() >= majorBlockThreshold) {
+            reasons.add(String.format("MAJOR 问题 %d 个，达到阻断阈值 %d", score.getMajorCount(), majorBlockThreshold));
+        }
+
+        if (!reasons.isEmpty()) {
+            return new DecisionResult(false, reasons);
+        }
+        if (suggestionBypass) {
+            return new DecisionResult(true, List.of("当前仅存在建议项问题，未触发阻断规则"));
+        }
+        return new DecisionResult(true, List.of(String.format(
+                "总分 %d 达到放行阈值 %d",
+                score.getTotalScore(),
+                sc.getBlockThreshold())));
     }
 
     /** 按 ReviewConfig.scoreLevels 查找等级 */
@@ -164,5 +215,10 @@ public class ScoreCalculator {
         private int criticalCount;
         private int majorCount;
         private int minorCount;
+        private int suggestionCount;
+        private List<String> decisionReasons = new ArrayList<>();
+    }
+
+    private record DecisionResult(boolean passed, List<String> reasons) {
     }
 }

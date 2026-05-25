@@ -8,6 +8,7 @@ import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
+import com.lnzz.argus.rule.service.RulePromptService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;
@@ -30,14 +31,17 @@ public class ErrorAnalysisEngine {
     private static final long RETRY_BACKOFF_MS = 2000;
     private static final long TIMEOUT_MS = 60_000;
     private static final String AI_MODEL = "deepseek-chat";
-    private static final int MAX_REPAIR_RESPONSE_CHARS = 16_000;
 
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper;
+    private final RulePromptService rulePromptService;
 
-    public ErrorAnalysisEngine(ChatClient.Builder chatClientBuilder, ObjectMapper objectMapper) {
+    public ErrorAnalysisEngine(ChatClient.Builder chatClientBuilder,
+                               ObjectMapper objectMapper,
+                               RulePromptService rulePromptService) {
         this.chatClient = chatClientBuilder.build();
         this.objectMapper = objectMapper;
+        this.rulePromptService = rulePromptService;
     }
 
     /**
@@ -48,6 +52,18 @@ public class ErrorAnalysisEngine {
      * @return 分析结果实体
      */
     public ErrorAnalysis analyze(String prompt, ErrorEvent event) {
+        return analyze(prompt, event, null);
+    }
+
+    /**
+     * 执行 AI 错误分析（含重试与超时降级）
+     *
+     * @param prompt 完整分析 Prompt
+     * @param event  原始错误事件
+     * @param scmConfigId SCM 仓库配置 ID，可为空
+     * @return 分析结果实体
+     */
+    public ErrorAnalysis analyze(String prompt, ErrorEvent event, Long scmConfigId) {
         log.info("开始AI错误分析: eventId={}, promptLength={}", event.getId(), prompt.length());
         long startTime = System.currentTimeMillis();
 
@@ -74,7 +90,7 @@ public class ErrorAnalysisEngine {
                 log.info("AI分析完成: eventId={}, duration={}ms, responseLength={}",
                         event.getId(), duration, response != null ? response.length() : 0);
 
-                AnalysisResult result = parseOrRepairResponse(response);
+                AnalysisResult result = parseOrRepairResponse(response, scmConfigId);
                 return buildEntity(result, event, prompt, response, duration);
 
             } catch (BizException e) {
@@ -162,7 +178,7 @@ public class ErrorAnalysisEngine {
         }
     }
 
-    private AnalysisResult parseOrRepairResponse(String response) {
+    private AnalysisResult parseOrRepairResponse(String response, Long scmConfigId) {
         try {
             return parseResponse(response);
         } catch (BizException parseException) {
@@ -170,7 +186,7 @@ public class ErrorAnalysisEngine {
                 throw parseException;
             }
             log.warn("AI错误分析响应不是合法 JSON，调用模型进行一次 JSON 规范化: {}", parseException.getMessage());
-            String repairedResponse = repairJsonWithAi(response);
+            String repairedResponse = repairJsonWithAi(response, scmConfigId);
             try {
                 return parseResponse(repairedResponse);
             } catch (BizException repairedParseException) {
@@ -182,10 +198,10 @@ public class ErrorAnalysisEngine {
         }
     }
 
-    private String repairJsonWithAi(String originalResponse) {
+    private String repairJsonWithAi(String originalResponse, Long scmConfigId) {
         try {
             return chatClient.prompt()
-                    .user(buildJsonRepairPrompt(originalResponse))
+                    .user(buildJsonRepairPrompt(originalResponse, scmConfigId))
                     .call()
                     .content();
         } catch (Exception e) {
@@ -194,41 +210,8 @@ public class ErrorAnalysisEngine {
         }
     }
 
-    private String buildJsonRepairPrompt(String originalResponse) {
-        String compactResponse = originalResponse == null ? "" : originalResponse.trim();
-        if (compactResponse.length() > MAX_REPAIR_RESPONSE_CHARS) {
-            compactResponse = compactResponse.substring(0, MAX_REPAIR_RESPONSE_CHARS);
-        }
-        return """
-                你需要把下面这段错误分析回复转换为严格 JSON。
-
-                只允许输出一个 JSON 对象，首字符必须是 `{`，末字符必须是 `}`。
-                不允许输出 Markdown、解释、寒暄、代码块标记或任何 JSON 外文本。
-                必须修复未闭合字符串、未闭合对象、非法换行、非法转义、尾随逗号等问题。
-                如果原文缺少某些字段，请用空字符串、false 或合理默认值补齐。
-
-                JSON schema:
-                {
-                  "rootCause": "",
-                  "technicalDetail": "",
-                  "impactScope": "",
-                  "calibratedSeverity": "P3",
-                  "severityReason": "",
-                  "confidence": 0.7,
-                  "fix": {
-                    "description": "",
-                    "codeExample": "",
-                    "filePath": "",
-                    "lineRange": ""
-                  },
-                  "estimatedEffort": "",
-                  "preventionAdvice": "",
-                  "isKnownIssue": false
-                }
-
-                原回复：
-                %s
-                """.formatted(compactResponse);
+    private String buildJsonRepairPrompt(String originalResponse, Long scmConfigId) {
+        return rulePromptService.buildErrorAnalysisJsonRepairPrompt(originalResponse, scmConfigId);
     }
 
     private String textNode(JsonNode node, String field) {

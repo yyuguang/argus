@@ -1,13 +1,14 @@
 package com.lnzz.argus.notification.service;
 
 import com.alibaba.fastjson2.JSON;
-import com.lnzz.argus.config.NotificationProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.util.StringUtils;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
@@ -23,21 +24,15 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class FeishuWebhookClient {
 
-    private final NotificationProperties properties;
     private final RestTemplate restTemplate = new RestTemplate();
 
     /**
-     * 发送飞书消息（Markdown 格式，预留）
+     * 发送飞书交互卡片消息。
      */
-    public boolean sendInteractive(String channel, String title, String content) {
-        if (!properties.getFeishu().isEnabled()) {
-            log.debug("飞书通知未启用, channel={}", channel);
-            return false;
-        }
-
-        String webhookUrl = resolveWebhook(channel);
-        if (webhookUrl == null) {
-            log.warn("飞书 Webhook 未配置: channel={}", channel);
+    public boolean sendInteractive(String title, String content, String webhookUrl) {
+        String normalizedWebhook = normalizeWebhook(webhookUrl);
+        if (!StringUtils.hasText(normalizedWebhook)) {
+            log.warn("飞书 Webhook 未配置或非法");
             return false;
         }
 
@@ -57,10 +52,10 @@ public class FeishuWebhookClient {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<String> entity = new HttpEntity<>(JSON.toJSONString(body), headers);
-            ResponseEntity<String> response = restTemplate.postForEntity(webhookUrl, entity, String.class);
+            ResponseEntity<String> response = restTemplate.postForEntity(normalizedWebhook, entity, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
-                log.info("飞书消息发送成功: channel={}", channel);
+                log.info("飞书消息发送成功");
                 return true;
             }
             log.warn("飞书消息发送失败: status={}", response.getStatusCode());
@@ -71,9 +66,29 @@ public class FeishuWebhookClient {
         }
     }
 
-    private String resolveWebhook(String channel) {
-        Map<String, String> webhooks = properties.getFeishu().getWebhooks();
-        if (webhooks == null) return null;
-        return webhooks.getOrDefault(channel, webhooks.get("default"));
+    private String normalizeWebhook(String webhookUrl) {
+        if (!StringUtils.hasText(webhookUrl)) {
+            return null;
+        }
+        String trimmed = webhookUrl.trim();
+        try {
+            URI uri = URI.create(trimmed);
+            if (!uri.isAbsolute() || uri.getScheme() == null
+                    || (!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme()))) {
+                log.warn("飞书 webhook 地址非法，已跳过发送: {}", maskWebhook(trimmed));
+                return null;
+            }
+            return trimmed;
+        } catch (IllegalArgumentException e) {
+            log.warn("飞书 webhook 地址解析失败，已跳过发送: {}", maskWebhook(trimmed));
+            return null;
+        }
+    }
+
+    private String maskWebhook(String webhookUrl) {
+        if (webhookUrl == null || webhookUrl.length() <= 16) {
+            return "****";
+        }
+        return webhookUrl.substring(0, 12) + "****";
     }
 }

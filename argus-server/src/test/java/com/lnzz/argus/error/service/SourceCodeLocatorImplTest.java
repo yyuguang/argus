@@ -1,6 +1,10 @@
 package com.lnzz.argus.error.service;
 
 import com.lnzz.argus.config.ErrorProcessingProperties;
+import com.lnzz.argus.codeindex.dto.req.SourceLocateReqDTO;
+import com.lnzz.argus.codeindex.dto.res.SourceLocateResDTO;
+import com.lnzz.argus.codeindex.service.SourceLocationService;
+import com.lnzz.argus.codeindex.support.CodeIndexConstants;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
@@ -25,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -40,6 +45,8 @@ class SourceCodeLocatorImplTest {
     private ScmPlatformServiceFactory scmFactory;
     @Mock
     private ScmPlatformService scmService;
+    @Mock
+    private SourceLocationService sourceLocationService;
 
     private InMemorySourceFileCache cache;
     private ErrorProcessingProperties properties;
@@ -49,7 +56,24 @@ class SourceCodeLocatorImplTest {
     void setUp() {
         cache = new InMemorySourceFileCache();
         properties = new ErrorProcessingProperties();
-        locator = new SourceCodeLocatorImpl(projectMappingMapper, scmConfigMapper, scmFactory, cache, properties);
+        locator = new SourceCodeLocatorImpl(projectMappingMapper, scmConfigMapper, scmFactory, cache, properties,
+                sourceLocationService);
+    }
+
+    @Test
+    @DisplayName("索引命中时优先按索引 filePath 和 commit 拉取源码")
+    void locatePrefersCodeIndexLocation() {
+        givenMappingAndConfig();
+        when(sourceLocationService.locate(any(SourceLocateReqDTO.class))).thenReturn(indexedLocation());
+        when(scmService.getFileContent(any(), eq("service/src/main/java/com/example/DemoService.java"), eq("idx123")))
+                .thenReturn("class DemoServiceByIndex {}");
+
+        SourceCodeLocator.SourceLocation location = locator.locate(appEvent());
+
+        assertTrue(location.found());
+        assertEquals("service/src/main/java/com/example/DemoService.java", location.filePath());
+        assertEquals("class DemoServiceByIndex {}", location.content());
+        verify(scmService, never()).getFileContent(any(), eq("src/main/java/com/example/DemoService.java"), eq("main"));
     }
 
     @Test
@@ -91,6 +115,21 @@ class SourceCodeLocatorImplTest {
         assertEquals("12345", location.content());
     }
 
+    @Test
+    @DisplayName("索引未命中时 Nginx 降级逻辑不受影响")
+    void nginxFallbackStillWorksWhenIndexMissed() {
+        givenMappingAndConfig();
+        when(sourceLocationService.locate(any(SourceLocateReqDTO.class))).thenReturn(notMatchedLocation());
+        when(scmService.getFileContent(any(), eq("src/main/resources/application.yml"), eq("main")))
+                .thenReturn("server:\n  port: 8080");
+
+        SourceCodeLocator.SourceLocation location = locator.locate(nginxEvent());
+
+        assertTrue(location.found());
+        assertEquals("src/main/resources/application.yml", location.filePath());
+        assertEquals("Nginx降级", location.reason());
+    }
+
     private void givenMappingAndConfig() {
         ProjectMapping mapping = new ProjectMapping();
         mapping.setAppName("order-service");
@@ -101,6 +140,7 @@ class SourceCodeLocatorImplTest {
         mapping.setDefaultBranch("main");
 
         ScmConfig scmConfig = new ScmConfig();
+        scmConfig.setId(1L);
         scmConfig.setScmProvider("github");
         scmConfig.setProjectId(100L);
         scmConfig.setEnabled(true);
@@ -117,6 +157,36 @@ class SourceCodeLocatorImplTest {
         event.setClassName("com.example.DemoService");
         event.setLineNumber(10);
         return event;
+    }
+
+    private ErrorEvent nginxEvent() {
+        ErrorEvent event = new ErrorEvent();
+        event.setAppName("order-service");
+        event.setEnvironment("prod");
+        event.setSourceType("NGINX");
+        event.setInterfaceRef("/api/order/list");
+        return event;
+    }
+
+    private SourceLocateResDTO indexedLocation() {
+        SourceLocateResDTO response = new SourceLocateResDTO();
+        response.setMatched(true);
+        response.setConfidence(CodeIndexConstants.Confidence.HIGH);
+        response.setMatchType(CodeIndexConstants.MatchType.QUALIFIED_NAME);
+        response.setIndexId(99L);
+        response.setCommitSha("idx123");
+        response.setSourceRoot("service/src/main/java");
+        response.setFilePath("service/src/main/java/com/example/DemoService.java");
+        response.setQualifiedName("com.example.DemoService");
+        return response;
+    }
+
+    private SourceLocateResDTO notMatchedLocation() {
+        SourceLocateResDTO response = new SourceLocateResDTO();
+        response.setMatched(false);
+        response.setConfidence(CodeIndexConstants.Confidence.NONE);
+        response.setMatchType(CodeIndexConstants.MatchType.NONE);
+        return response;
     }
 
     private static class InMemorySourceFileCache implements SourceFileCacheService {

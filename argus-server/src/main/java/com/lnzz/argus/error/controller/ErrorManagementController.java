@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lnzz.argus.common.result.Result;
 import com.lnzz.argus.error.entity.ErrorAnalysisTask;
 import com.lnzz.argus.error.entity.ErrorEvent;
+import com.lnzz.argus.error.model.ErrorEventPageRequest;
 import com.lnzz.argus.error.service.ErrorManagementService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -12,7 +13,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -32,17 +32,23 @@ public class ErrorManagementController {
 
     private final ErrorManagementService errorManagementService;
 
-    @GetMapping
-    public Result<Map<String, Object>> listErrors(
-            @RequestParam(defaultValue = "1") long pageNo,
-            @RequestParam(defaultValue = "10") long pageSize,
-            @RequestParam(required = false) String appName,
-            @RequestParam(required = false) String environment,
-            @RequestParam(required = false) String severity,
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) String keyword) {
+    /**
+     * 分页查询错误事件。
+     *
+     * @param request 错误事件分页查询请求
+     * @return 错误事件分页结果
+     */
+    @PostMapping("/page")
+    public Result<Map<String, Object>> listErrors(@RequestBody(required = false) ErrorEventPageRequest request) {
+        ErrorEventPageRequest safeRequest = request == null ? new ErrorEventPageRequest() : request;
         Page<ErrorEvent> page = errorManagementService.queryEvents(
-                pageNo, pageSize, appName, environment, severity, status, keyword);
+                safeRequest.normalizedPageNo(),
+                safeRequest.normalizedPageSize(),
+                safeRequest.getAppName(),
+                safeRequest.getEnvironment(),
+                safeRequest.getSeverity(),
+                safeRequest.getStatus(),
+                safeRequest.getKeyword());
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("records", page.getRecords());
         data.put("total", page.getTotal());

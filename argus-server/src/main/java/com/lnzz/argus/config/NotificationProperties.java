@@ -4,8 +4,6 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-
 /**
  * 通知配置属性（M7-A01/A04/A05）
  *
@@ -23,30 +21,12 @@ public class NotificationProperties {
     /** 企业微信配置 */
     private WechatConfig wechat = new WechatConfig();
 
-    /** 飞书配置（预留） */
-    private FeishuConfig feishu = new FeishuConfig();
-
-    /** 钉钉配置（预留） */
-    private DingTalkConfig dingtalk = new DingTalkConfig();
-
     /** 静默配置 */
     private SilenceConfig silence = new SilenceConfig();
 
     @Data
     public static class WechatConfig {
         private RateLimit rateLimit = new RateLimit();
-    }
-
-    @Data
-    public static class FeishuConfig {
-        private boolean enabled = false;
-        private Map<String, String> webhooks;
-    }
-
-    @Data
-    public static class DingTalkConfig {
-        private boolean enabled = false;
-        private Map<String, String> webhooks;
     }
 
     @Data

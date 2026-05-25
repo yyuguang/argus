@@ -12,6 +12,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -185,7 +186,7 @@ class ErrorTypeIdentifierTest {
 
     private ErrorTypeIdentifier configuredIdentifier(List<ErrorTypeRule> rules) {
         ErrorTypeRuleMapper mapper = mock(ErrorTypeRuleMapper.class);
-        when(mapper.selectList(any())).thenReturn(rules);
+        doReturn(rules).when(mapper).findEnabledRules();
         ErrorTypeIdentifier configured = new ErrorTypeIdentifier();
         configured.setRuleMapper(mapper);
         return configured;

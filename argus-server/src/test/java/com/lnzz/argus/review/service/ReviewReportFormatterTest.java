@@ -80,10 +80,12 @@ class ReviewReportFormatterTest {
         ReviewTask task = createTask();
         ScoreCalculator.ScoreResult score = createScore(80, 80, 80, 80, 80, 0, 0, 0, false);
         score.setTotalScore(75);
+        score.setDecisionReasons(List.of("总分 75 低于阻断阈值 80"));
 
         String report = formatter.formatReport(task, score, List.of(), config);
 
-        assertTrue(report.contains("❌ **评审不通过**（低于 80 分）"));
+        assertTrue(report.contains("❌ **评审不通过**，请优先修复以下阻断原因"));
+        assertTrue(report.contains("总分 75 低于阻断阈值 80"));
     }
 
     @Test
@@ -91,10 +93,42 @@ class ReviewReportFormatterTest {
     void passedReportShowsPass() {
         ReviewTask task = createTask();
         ScoreCalculator.ScoreResult score = createScore(90, 90, 90, 90, 90, 0, 0, 0, true);
+        score.setDecisionReasons(List.of("总分 90 达到放行阈值 60"));
 
         String report = formatter.formatReport(task, score, List.of(), defaultConfig);
 
         assertTrue(report.contains("✅ **评审通过**，代码允许合并"));
+        assertFalse(report.contains("总分 90 达到放行阈值 60"));
+    }
+
+    @Test
+    @DisplayName("CRITICAL 直接阻断原因写入报告")
+    void criticalBlockingReasonShown() {
+        ReviewTask task = createTask();
+        ScoreCalculator.ScoreResult score = createScore(88, 88, 88, 88, 88, 1, 0, 0, false);
+        score.setDecisionReasons(List.of("存在 1 个 CRITICAL 问题，触发直接阻断"));
+
+        String report = formatter.formatScoreReport(task, score, defaultConfig);
+
+        assertTrue(report.contains("存在 1 个 CRITICAL 问题，触发直接阻断"));
+    }
+
+    @Test
+    @DisplayName("建议项绕过阈值原因在通过场景透出")
+    void suggestionBypassReasonShown() {
+        ReviewConfig config = ReviewConfig.defaults();
+        config.getScoring().setBlockThreshold(90);
+
+        ReviewTask task = createTask();
+        ScoreCalculator.ScoreResult score = createScore(70, 70, 70, 70, 70, 0, 0, 0, true);
+        score.setTotalScore(64);
+        score.setSuggestionCount(2);
+        score.setDecisionReasons(List.of("当前仅存在建议项问题，未触发阻断规则"));
+
+        String report = formatter.formatScoreReport(task, score, config);
+
+        assertTrue(report.contains("✅ **评审通过**，代码允许合并"));
+        assertTrue(report.contains("当前仅存在建议项问题，未触发阻断规则"));
     }
 
     @Test

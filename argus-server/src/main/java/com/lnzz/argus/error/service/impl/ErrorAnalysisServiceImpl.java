@@ -25,6 +25,10 @@ import com.lnzz.argus.knowledge.service.KnowledgeMatcher;
 import com.lnzz.argus.knowledge.service.KnowledgeService;
 import com.lnzz.argus.knowledge.vector.VectorKnowledgeService;
 import com.lnzz.argus.notification.service.NotificationService;
+import com.lnzz.argus.review.config.ReviewConfig;
+import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.service.ScmConfigService;
+import com.lnzz.argus.scm.service.ScmReviewConfigSupport;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
@@ -63,6 +67,8 @@ public class ErrorAnalysisServiceImpl implements ErrorAnalysisService {
     private final KnowledgeMatcher knowledgeMatcher;
     private final VectorKnowledgeService vectorKnowledgeService;
     private final ErrorProcessingProperties errorProcessingProperties;
+    private final ScmConfigService scmConfigService;
+    private final ScmReviewConfigSupport scmReviewConfigSupport;
 
     @Value("${argus.vector.enabled:false}")
     private boolean vectorEnabled;
@@ -110,12 +116,16 @@ public class ErrorAnalysisServiceImpl implements ErrorAnalysisService {
 
             // 2. M5-B02: 查询历史相似案例
             List<ErrorAnalysis> historyCases = findHistoryCases(event);
+            ScmConfig errorAnalysisScmConfig = resolveErrorAnalysisScmConfig(event, location);
+            ReviewConfig reviewConfig = scmReviewConfigSupport.resolveReviewConfig(errorAnalysisScmConfig);
 
             // 3. M5-B01: 构建 Prompt
-            String prompt = promptBuilder.buildAnalysisPrompt(event, location, historyCases);
+            String prompt = promptBuilder.buildAnalysisPrompt(
+                    event, location, historyCases, reviewConfig, errorAnalysisScmConfig != null ? errorAnalysisScmConfig.getId() : null);
 
             // 4. M5-B03/B05: AI 分析（含重试降级）
-            ErrorAnalysis analysis = analysisEngine.analyze(prompt, event);
+            ErrorAnalysis analysis = analysisEngine.analyze(prompt, event,
+                    errorAnalysisScmConfig != null ? errorAnalysisScmConfig.getId() : null);
 
             // 5. 落库
             ErrorAnalysis existingAnalysis = getAnalysisByEventId(eventId);
@@ -253,6 +263,28 @@ public class ErrorAnalysisServiceImpl implements ErrorAnalysisService {
                 .limit(3)
                 .map(this::convertVectorDocumentToHistoryCase)
                 .collect(Collectors.toList());
+    }
+
+    private ScmConfig resolveErrorAnalysisScmConfig(ErrorEvent event,
+                                                    SourceCodeLocator.SourceLocation location) {
+        Long scmProjectId = null;
+        String scmProvider = null;
+        if (location != null && location.mapping() != null) {
+            scmProjectId = location.mapping().getScmProjectId();
+            scmProvider = location.mapping().getScmProvider();
+        }
+        if (scmProjectId == null || scmProvider == null || scmProvider.isBlank()) {
+            if (event == null || event.getAppName() == null || event.getAppName().isBlank()) {
+                return null;
+            }
+            var mapping = sourceCodeLocator.resolveProjectMapping(event.getAppName());
+            if (mapping == null) {
+                return null;
+            }
+            scmProjectId = mapping.getScmProjectId();
+            scmProvider = mapping.getScmProvider();
+        }
+        return scmConfigService.resolveConfig(scmProvider, scmProjectId, null, null);
     }
 
     private boolean matchesKnowledgeScore(Document document) {

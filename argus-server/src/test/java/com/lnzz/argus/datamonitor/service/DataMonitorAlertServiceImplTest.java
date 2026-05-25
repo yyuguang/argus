@@ -10,15 +10,12 @@ import com.lnzz.argus.datamonitor.mapper.LogQualityIssueMapper;
 import com.lnzz.argus.datamonitor.mapper.SlowSqlEventMapper;
 import com.lnzz.argus.datamonitor.service.DataMonitorAlertService.DataMonitorAlertResult;
 import com.lnzz.argus.datamonitor.service.impl.DataMonitorAlertServiceImpl;
-import com.lnzz.argus.notification.entity.NotificationRecord;
 import com.lnzz.argus.notification.mapper.NotificationRecordMapper;
-import com.lnzz.argus.notification.service.WechatWebhookClient;
+import com.lnzz.argus.notification.service.ScmNotificationDispatcher;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.mapper.ScmConfigMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -27,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -40,16 +38,18 @@ class DataMonitorAlertServiceImplTest {
     void alertSlowSqlUsesScmWebhook() {
         Fixture fixture = new Fixture();
         when(fixture.notificationRecordMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
-        when(fixture.wechatWebhookClient.sendMarkdown(eq("data-monitor"), contains("索引建议"), eq("https://wechat")))
-                .thenReturn(true);
+        when(fixture.scmNotificationDispatcher.dispatchMarkdown(any(), isNull(), eq("data-monitor"),
+                eq("Argus 数据监控告警"), contains("索引建议"), eq("DATA_MONITOR_ALERT"),
+                eq(1L), eq("SLOW_SQL_EVENT"), isNull()))
+                .thenReturn(new ScmNotificationDispatcher.DispatchResult(true, 1, 1, "发送成功"));
 
         List<DataMonitorAlertResult> results = fixture.service.alertPending();
 
         assertEquals(1, results.size());
         assertTrue(results.get(0).sent());
-        ArgumentCaptor<NotificationRecord> recordCaptor = ArgumentCaptor.forClass(NotificationRecord.class);
-        verify(fixture.notificationRecordMapper).insert(recordCaptor.capture());
-        assertEquals("DATA_MONITOR_ALERT", recordCaptor.getValue().getType());
+        verify(fixture.scmNotificationDispatcher).dispatchMarkdown(any(), isNull(), eq("data-monitor"),
+                eq("Argus 数据监控告警"), contains("索引建议"), eq("DATA_MONITOR_ALERT"),
+                eq(1L), eq("SLOW_SQL_EVENT"), isNull());
     }
 
     @Test
@@ -61,7 +61,7 @@ class DataMonitorAlertServiceImplTest {
         List<DataMonitorAlertResult> results = fixture.service.alertPending();
 
         assertEquals("短窗口内已通知", results.get(0).message());
-        verify(fixture.wechatWebhookClient, never()).sendMarkdown(any(), any(), any());
+        verify(fixture.scmNotificationDispatcher, never()).dispatchMarkdown(any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     private static class Fixture {
@@ -72,10 +72,10 @@ class DataMonitorAlertServiceImplTest {
         private final DataMonitorConfigMapper configMapper = mock(DataMonitorConfigMapper.class);
         private final ScmConfigMapper scmConfigMapper = mock(ScmConfigMapper.class);
         private final NotificationRecordMapper notificationRecordMapper = mock(NotificationRecordMapper.class);
-        private final WechatWebhookClient wechatWebhookClient = mock(WechatWebhookClient.class);
+        private final ScmNotificationDispatcher scmNotificationDispatcher = mock(ScmNotificationDispatcher.class);
         private final DataMonitorAlertServiceImpl service = new DataMonitorAlertServiceImpl(slowSqlEventMapper,
                 lockEventMapper, poolSnapshotMapper, issueMapper, configMapper, scmConfigMapper,
-                notificationRecordMapper, wechatWebhookClient);
+                notificationRecordMapper, scmNotificationDispatcher);
 
         private Fixture() {
             SlowSqlEvent event = new SlowSqlEvent();

@@ -3,6 +3,8 @@ package com.lnzz.argus.datamonitor.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
+import com.lnzz.argus.datamonitor.ai.ConnectionPoolRiskAiEngine;
+import com.lnzz.argus.datamonitor.ai.ConnectionPoolRiskPromptBuilder;
 import com.lnzz.argus.datamonitor.entity.ConnectionPoolSnapshot;
 import com.lnzz.argus.datamonitor.entity.DataMonitorConfig;
 import com.lnzz.argus.datamonitor.entity.DataSourceConfig;
@@ -35,6 +37,8 @@ public class ConnectionPoolMetricServiceImpl implements ConnectionPoolMetricServ
     private final DataSourceConfigMapper dataSourceConfigMapper;
     private final ConnectionPoolSnapshotMapper connectionPoolSnapshotMapper;
     private final SlowSqlEventMapper slowSqlEventMapper;
+    private final ConnectionPoolRiskPromptBuilder connectionPoolRiskPromptBuilder;
+    private final ConnectionPoolRiskAiEngine connectionPoolRiskAiEngine;
 
     @Override
     public PoolMetricResponse ingest(PoolMetricRequest request) {
@@ -52,6 +56,13 @@ public class ConnectionPoolMetricServiceImpl implements ConnectionPoolMetricServ
         DataSourceConfig datasource = resolveDatasource(monitorConfig, request.datasourceName());
         RiskDecision risk = decideRisk(request);
         ConnectionPoolSnapshot snapshot = buildSnapshot(request, monitorConfig, datasource, environment, risk);
+        if (risk.detected()) {
+            SlowSqlEvent relatedSlowSqlEvent = datasource == null ? null : findRelatedSlowSqlEvent(datasource.getId(), snapshot);
+            ConnectionPoolRiskAiEngine.PoolRiskAiResult aiResult = connectionPoolRiskAiEngine.analyze(
+                    connectionPoolRiskPromptBuilder.buildPrompt(snapshot, relatedSlowSqlEvent,
+                            risk.riskType(), risk.riskLevel(), monitorConfig.getScmConfigId()));
+            snapshot.setRiskReason(resolveRiskReason(snapshot, risk, aiResult));
+        }
         connectionPoolSnapshotMapper.insert(snapshot);
         if (risk.detected() && datasource != null) {
             linkSlowSqlEvents(datasource.getId(), snapshot);
@@ -90,6 +101,7 @@ public class ConnectionPoolMetricServiceImpl implements ConnectionPoolMetricServ
         snapshot.setErrorCount(value(request.errorCount()));
         snapshot.setRiskType(risk.riskType());
         snapshot.setRiskLevel(risk.riskLevel());
+        snapshot.setRiskReason(resolveDefaultRiskReason(risk));
         snapshot.setCollectedAt(request.collectedAt() != null ? request.collectedAt() : LocalDateTime.now());
         return snapshot;
     }
@@ -119,18 +131,68 @@ public class ConnectionPoolMetricServiceImpl implements ConnectionPoolMetricServ
     }
 
     private void linkSlowSqlEvents(Long datasourceId, ConnectionPoolSnapshot snapshot) {
-        LocalDateTime collectedAt = snapshot.getCollectedAt() != null ? snapshot.getCollectedAt() : LocalDateTime.now();
-        SlowSqlEvent event = slowSqlEventMapper.selectOne(new LambdaQueryWrapper<SlowSqlEvent>()
-                .eq(SlowSqlEvent::getDatasourceId, datasourceId)
-                .isNull(SlowSqlEvent::getRelatedPoolSnapshotId)
-                .ge(SlowSqlEvent::getOccurredAt, collectedAt.minusMinutes(5))
-                .le(SlowSqlEvent::getOccurredAt, collectedAt.plusMinutes(5))
-                .orderByDesc(SlowSqlEvent::getOccurredAt)
-                .last("limit 1"));
+        SlowSqlEvent event = findRelatedSlowSqlEvent(datasourceId, snapshot);
         if (event != null) {
             event.setRelatedPoolSnapshotId(snapshot.getId());
             slowSqlEventMapper.updateById(event);
         }
+    }
+
+    private SlowSqlEvent findRelatedSlowSqlEvent(Long datasourceId, ConnectionPoolSnapshot snapshot) {
+        LocalDateTime collectedAt = snapshot.getCollectedAt() != null ? snapshot.getCollectedAt() : LocalDateTime.now();
+        return slowSqlEventMapper.selectOne(new LambdaQueryWrapper<SlowSqlEvent>()
+                .eq(SlowSqlEvent::getDatasourceId, datasourceId)
+                .ge(SlowSqlEvent::getOccurredAt, collectedAt.minusMinutes(5))
+                .le(SlowSqlEvent::getOccurredAt, collectedAt.plusMinutes(5))
+                .orderByDesc(SlowSqlEvent::getOccurredAt)
+                .last("limit 1"));
+    }
+
+    private String resolveDefaultRiskReason(RiskDecision risk) {
+        if (!risk.detected() || !StringUtils.hasText(risk.riskType())) {
+            return null;
+        }
+        return switch (risk.riskType()) {
+            case "POOL_EXHAUSTED" -> "连接池已接近耗尽，请优先排查长 SQL 或连接泄漏";
+            case "POOL_HIGH_USAGE" -> "连接池使用率持续偏高，请关注峰值流量和慢请求";
+            case "POOL_ACQUIRE_SLOW" -> "获取连接耗时偏高，请排查连接池参数和数据库响应";
+            case "POOL_ERROR" -> "连接池存在异常或超时，请检查连接稳定性和错误日志";
+            default -> risk.riskType();
+        };
+    }
+
+    private String resolveRiskReason(ConnectionPoolSnapshot snapshot,
+                                     RiskDecision risk,
+                                     ConnectionPoolRiskAiEngine.PoolRiskAiResult aiResult) {
+        String defaultReason = resolveDefaultRiskReason(risk);
+        if (aiResult == null) {
+            return defaultReason;
+        }
+        StringBuilder sb = new StringBuilder();
+        if (StringUtils.hasText(aiResult.summary())) {
+            sb.append(aiResult.summary().trim());
+        } else if (StringUtils.hasText(aiResult.primaryCause())) {
+            sb.append(aiResult.primaryCause().trim());
+        }
+        if (StringUtils.hasText(aiResult.impactScope())) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append("影响范围：").append(aiResult.impactScope().trim());
+        }
+        if (aiResult.evidence() != null && !aiResult.evidence().isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append("证据：").append(String.join("；", aiResult.evidence()));
+        }
+        if (sb.length() == 0) {
+            return defaultReason;
+        }
+        if (StringUtils.hasText(defaultReason)) {
+            sb.append("\n规则兜底：").append(defaultReason);
+        }
+        return sb.toString();
     }
 
     private void validateRequest(PoolMetricRequest request) {

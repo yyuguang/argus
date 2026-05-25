@@ -4,6 +4,9 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.lnzz.argus.config.ErrorProcessingProperties;
+import com.lnzz.argus.codeindex.dto.req.SourceLocateReqDTO;
+import com.lnzz.argus.codeindex.dto.res.SourceLocateResDTO;
+import com.lnzz.argus.codeindex.service.SourceLocationService;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
@@ -37,6 +40,7 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
     private final ScmPlatformServiceFactory scmFactory;
     private final SourceFileCacheService sourceFileCacheService;
     private final ErrorProcessingProperties errorProcessingProperties;
+    private final SourceLocationService sourceLocationService;
 
     // ======================== M5-A01: 项目映射查询 ========================
 
@@ -77,6 +81,11 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         ScmPlatformService scmService = scmFactory.getRequired(mapping.getScmProvider());
         String ref = defaultRef(mapping, scmConfig);
 
+        SourceLocation indexedLocation = locateByCodeIndex(event, mapping, scmConfig, scmService, ref);
+        if (indexedLocation.found()) {
+            return indexedLocation;
+        }
+
         String sourceRoot = matchModule(event.getClassName(), mapping, scmConfig);
 
         String primaryPath = buildFilePath(event.getFilePath(), event.getClassName(),
@@ -112,6 +121,46 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
         }
 
         return SourceLocation.notFound("源码定位失败: filePath=" + primaryPath);
+    }
+
+    private SourceLocation locateByCodeIndex(ErrorEvent event,
+                                             ProjectMapping mapping,
+                                             ScmConfig scmConfig,
+                                             ScmPlatformService scmService,
+                                             String defaultRef) {
+        try {
+            SourceLocateReqDTO requestDTO = new SourceLocateReqDTO();
+            requestDTO.setAppName(event.getAppName());
+            requestDTO.setEnvironment(event.getEnvironment());
+            requestDTO.setScmConfigId(scmConfig.getId());
+            requestDTO.setBranchName(defaultRef);
+            requestDTO.setQualifiedName(event.getClassName());
+            requestDTO.setFilePath(event.getFilePath());
+            requestDTO.setLineNumber(event.getLineNumber());
+            SourceLocateResDTO locateResult = sourceLocationService.locate(requestDTO);
+            if (locateResult == null || !Boolean.TRUE.equals(locateResult.getMatched())
+                    || locateResult.getFilePath() == null || locateResult.getFilePath().isBlank()) {
+                return SourceLocation.notFound("源码索引未命中");
+            }
+            String ref = locateResult.getCommitSha() == null || locateResult.getCommitSha().isBlank()
+                    ? defaultRef
+                    : locateResult.getCommitSha();
+            String content = fetchSourceFile(scmService, scmConfig, locateResult.getFilePath(), ref);
+            if (content == null) {
+                return SourceLocation.notFound("源码索引命中文件但拉取失败: filePath=" + locateResult.getFilePath());
+            }
+            Map<String, String> contextFiles = fetchContextFiles(scmService, scmConfig, event, mapping,
+                    defaultIfBlank(locateResult.getSourceRoot(), mapping.getSourceRoot()), ref);
+            log.info("源码索引定位成功: appName={}, filePath={}, matchType={}, confidence={}",
+                    event.getAppName(), locateResult.getFilePath(), locateResult.getMatchType(), locateResult.getConfidence());
+            return new SourceLocation(locateResult.getFilePath(), limitPromptContent(content,
+                    errorProcessingProperties.getSource().getMaxPromptSourceChars()), contextFiles, mapping, true,
+                    "源码索引命中: " + locateResult.getMatchType());
+        } catch (Exception e) {
+            log.warn("源码索引定位失败，降级旧定位逻辑: appName={}, className={}, message={}",
+                    event.getAppName(), event.getClassName(), e.getMessage());
+            return SourceLocation.notFound("源码索引定位异常");
+        }
     }
 
     // ======================== M5-A02: 模块匹配 ========================
@@ -374,6 +423,10 @@ public class SourceCodeLocatorImpl implements SourceCodeLocator {
 
     private String defaultRef(ProjectMapping mapping, ScmConfig scmConfig) {
         return mapping.getDefaultBranch() != null ? mapping.getDefaultBranch() : "master";
+    }
+
+    private String defaultIfBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private String fetchSourceFile(ScmPlatformService scmService, ScmConfig scmConfig, String filePath, String ref) {

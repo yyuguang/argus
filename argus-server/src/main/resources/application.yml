@@ -72,6 +72,7 @@ argus:
       web-base-url: ${GITLAB_WEB_BASE_URL:https://gitlab.com}
       api-timeout: 10000
       max-file-size: 1048576
+      max-archive-size: ${GITLAB_MAX_ARCHIVE_SIZE:104857600}
       retry:
         max-attempts: 3
         backoff-multiplier: 2
@@ -81,6 +82,7 @@ argus:
       web-base-url: ${GITHUB_WEB_BASE_URL:https://github.com}
       api-timeout: 10000
       max-file-size: 1048576
+      max-archive-size: ${GITHUB_MAX_ARCHIVE_SIZE:104857600}
       retry:
         max-attempts: 3
         backoff-multiplier: 2
@@ -90,9 +92,21 @@ argus:
       web-base-url: ${GITEE_WEB_BASE_URL:https://gitee.com}
       api-timeout: 10000
       max-file-size: 1048576
+      max-archive-size: ${GITEE_MAX_ARCHIVE_SIZE:104857600}
       retry:
         max-attempts: 3
         backoff-multiplier: 2
+
+  # ==================== 源码索引配置 ====================
+  code-index:
+    # 管理端刷新索引默认走异步任务，旧同步接口仍保留为应急入口。
+    async-scan-enabled: ${ARGUS_CODE_INDEX_ASYNC_SCAN_ENABLED:true}
+    parser:
+      # 首版先关闭并行解析，待异步进度稳定后再灰度开启。
+      parallel-enabled: ${ARGUS_CODE_INDEX_PARSER_PARALLEL_ENABLED:false}
+      parallelism: ${ARGUS_CODE_INDEX_PARSER_PARALLELISM:2}
+      queue-size: ${ARGUS_CODE_INDEX_PARSER_QUEUE_SIZE:1000}
+      progress-interval: ${ARGUS_CODE_INDEX_PARSER_PROGRESS_INTERVAL:500}
 
   # ==================== 向量知识库配置 ====================
   vector:
@@ -227,16 +241,6 @@ argus:
       rate-limit:
         same-type-interval: 60
         max-per-hour: 30
-
-    feishu:
-      enabled: false
-      webhooks:
-        default: ${FEISHU_WEBHOOK_DEFAULT:}
-
-    dingtalk:
-      enabled: false
-      webhooks:
-        default: ${DINGTALK_WEBHOOK_DEFAULT:}
 
     # M7-A05: 静默控制
     silence:

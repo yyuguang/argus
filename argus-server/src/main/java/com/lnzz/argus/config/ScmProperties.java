@@ -37,6 +37,8 @@ public class ScmProperties {
         private int apiTimeout = 10000;
         /** 最大文件大小(bytes) */
         private int maxFileSize = 1048576;
+        /** 最大仓库快照大小(bytes) */
+        private int maxArchiveSize = 104857600;
         /** 重试配置 */
         private Retry retry = new Retry();
     }

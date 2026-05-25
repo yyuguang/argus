@@ -1,7 +1,7 @@
 package com.lnzz.argus.datamonitor.service.impl;
 
 import com.alibaba.fastjson2.JSON;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.lnzz.argus.common.constant.DataMonitorConstants;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.datamonitor.entity.DataMonitorConfig;
@@ -19,6 +19,7 @@ import com.lnzz.argus.error.mapper.ProjectMappingMapper;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.service.ScmConfigService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -34,13 +35,12 @@ import java.util.regex.Pattern;
  * @author lnzz
  * @since 1.0.0
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConfigService {
 
     private static final Pattern IDENTIFIER = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
-    private static final String DEFAULT_SCAN_MODE = "ID_INCREMENT";
-    private static final int DEFAULT_QUALITY_CHECK_INTERVAL_SECONDS = 300;
 
     private final InterfaceLogTableConfigMapper logTableConfigMapper;
     private final DataMonitorConfigMapper dataMonitorConfigMapper;
@@ -53,13 +53,12 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
     @Override
     public List<InterfaceLogTableConfigResponse> list(Long scmConfigId, Long mappingId) {
         requireMonitorConfig(scmConfigId, mappingId);
-        return logTableConfigMapper.selectList(new LambdaQueryWrapper<InterfaceLogTableConfig>()
-                        .eq(InterfaceLogTableConfig::getProjectMappingId, mappingId)
-                        .orderByAsc(InterfaceLogTableConfig::getTableName)
-                        .orderByAsc(InterfaceLogTableConfig::getId))
+        List<InterfaceLogTableConfigResponse> responses = logTableConfigMapper.findByMappingId(mappingId)
                 .stream()
                 .map(this::toResponse)
                 .toList();
+        log.debug("查询接口日志表配置: scmConfigId={}, mappingId={}, count={}", scmConfigId, mappingId, responses.size());
+        return responses;
     }
 
     @Override
@@ -79,6 +78,8 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         applyRequest(config, request);
         inspector.validateMapping(datasource, secretCodec.decrypt(datasource.getPasswordSecret()), config);
         logTableConfigMapper.insert(config);
+        log.info("创建接口日志表配置: configId={}, mappingId={}, datasourceId={}, tableName={}",
+                config.getId(), mappingId, datasource.getId(), config.getTableName());
         return toResponse(config);
     }
 
@@ -100,6 +101,8 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         applyRequest(config, request);
         inspector.validateMapping(datasource, secretCodec.decrypt(datasource.getPasswordSecret()), config);
         logTableConfigMapper.updateById(config);
+        log.info("更新接口日志表配置: configId={}, mappingId={}, datasourceId={}, tableName={}",
+                configId, mappingId, datasource.getId(), config.getTableName());
         return toResponse(config);
     }
 
@@ -110,15 +113,23 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         InterfaceLogTableConfig config = requireConfig(mappingId, configId);
         config.setEnabled(request != null && Boolean.TRUE.equals(request.enabled()));
         logTableConfigMapper.updateById(config);
+        log.info("切换接口日志表配置启用状态: configId={}, mappingId={}, enabled={}",
+                configId, mappingId, config.getEnabled());
         return toResponse(config);
+    }
+
+    @Override
+    public void delete(Long scmConfigId, Long mappingId, Long configId) {
+        requireMonitorConfig(scmConfigId, mappingId);
+        InterfaceLogTableConfig config = requireConfig(mappingId, configId);
+        logTableConfigMapper.deleteById(configId);
+        log.info("删除接口日志表配置: configId={}, mappingId={}, datasourceId={}, tableName={}",
+                configId, mappingId, config.getDatasourceId(), config.getTableName());
     }
 
     private DataMonitorConfig requireMonitorConfig(Long scmConfigId, Long mappingId) {
         requireMappingBelongsToScm(scmConfigId, mappingId);
-        DataMonitorConfig config = dataMonitorConfigMapper.selectOne(new LambdaQueryWrapper<DataMonitorConfig>()
-                .eq(DataMonitorConfig::getScmConfigId, scmConfigId)
-                .eq(DataMonitorConfig::getProjectMappingId, mappingId)
-                .last("limit 1"));
+        DataMonitorConfig config = dataMonitorConfigMapper.findByScmAndMapping(scmConfigId, mappingId);
         if (config == null) {
             throw new BizException(ResultCode.NOT_FOUND, "请先创建应用级数据监控总配置");
         }
@@ -127,12 +138,15 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
 
     private ProjectMapping requireMappingBelongsToScm(Long scmConfigId, Long mappingId) {
         ScmConfig scmConfig = scmConfigService.requireById(scmConfigId);
-        ProjectMapping mapping = projectMappingMapper.selectById(mappingId);
+        ProjectMapping mapping = projectMappingMapper.findById(mappingId);
         if (mapping == null) {
             throw new BizException(ResultCode.NOT_FOUND, "应用映射不存在: " + mappingId);
         }
         if (!Objects.equals(normalizeProvider(scmConfig.getScmProvider()), normalizeProvider(mapping.getScmProvider()))
                 || !Objects.equals(scmConfig.getProjectId(), mapping.getScmProjectId())) {
+            log.warn("应用映射归属校验失败: scmConfigId={}, mappingId={}, scmProvider={}, mappingProvider={}, scmProjectId={}, mappingProjectId={}",
+                    scmConfigId, mappingId, scmConfig.getScmProvider(), mapping.getScmProvider(),
+                    scmConfig.getProjectId(), mapping.getScmProjectId());
             throw new BizException(ResultCode.PARAM_ERROR, "应用映射不属于当前 SCM 配置");
         }
         return mapping;
@@ -142,16 +156,16 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         if (datasourceId == null) {
             throw new BizException(ResultCode.PARAM_ERROR, "数据源不能为空");
         }
-        DataSourceConfig datasource = dataSourceConfigMapper.selectById(datasourceId);
-        if (datasource == null || !Objects.equals(datasource.getProjectMappingId(), mappingId)) {
+        DataSourceConfig datasource = dataSourceConfigMapper.findByIdAndMappingId(mappingId, datasourceId);
+        if (datasource == null) {
             throw new BizException(ResultCode.NOT_FOUND, "数据源配置不存在: " + datasourceId);
         }
         return datasource;
     }
 
     private InterfaceLogTableConfig requireConfig(Long mappingId, Long configId) {
-        InterfaceLogTableConfig config = logTableConfigMapper.selectById(configId);
-        if (config == null || !Objects.equals(config.getProjectMappingId(), mappingId)) {
+        InterfaceLogTableConfig config = logTableConfigMapper.findByIdAndMappingId(mappingId, configId);
+        if (config == null) {
             throw new BizException(ResultCode.NOT_FOUND, "接口日志表配置不存在: " + configId);
         }
         return config;
@@ -170,8 +184,8 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         requireIdentifier(request.statusCodeColumn(), "状态码字段", false);
         requireIdentifier(request.requestIdColumn(), "请求ID字段", false);
         requireIdentifier(request.traceIdColumn(), "traceId字段", false);
-        if (StringUtils.hasText(request.scanMode()) && !Set.of("ID_INCREMENT", "TIME_WINDOW")
-                .contains(request.scanMode().trim().toUpperCase(Locale.ROOT))) {
+        if (StringUtils.hasText(request.scanMode())
+                && !DataMonitorConstants.SUPPORTED_SCAN_MODES.contains(request.scanMode().trim().toUpperCase(Locale.ROOT))) {
             throw new BizException(ResultCode.PARAM_ERROR, "扫描模式仅支持 ID_INCREMENT / TIME_WINDOW");
         }
         if (request.qualityCheckIntervalSeconds() != null && request.qualityCheckIntervalSeconds() < 1) {
@@ -192,10 +206,7 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
     }
 
     private void ensureTableUnique(Long datasourceId, String tableName, Long excludedId) {
-        InterfaceLogTableConfig existing = logTableConfigMapper.selectOne(new LambdaQueryWrapper<InterfaceLogTableConfig>()
-                .eq(InterfaceLogTableConfig::getDatasourceId, datasourceId)
-                .eq(InterfaceLogTableConfig::getTableName, tableName)
-                .last("limit 1"));
+        InterfaceLogTableConfig existing = logTableConfigMapper.findByDatasourceAndTable(datasourceId, tableName);
         if (existing != null && !Objects.equals(existing.getId(), excludedId)) {
             throw new BizException(ResultCode.PARAM_ERROR, "同一数据源下日志表配置已存在: " + tableName);
         }
@@ -214,12 +225,12 @@ public class InterfaceLogTableConfigServiceImpl implements InterfaceLogTableConf
         apply(config::setTraceIdColumn, request.traceIdColumn());
         config.setScanMode(StringUtils.hasText(request.scanMode())
                 ? request.scanMode().trim().toUpperCase(Locale.ROOT)
-                : StringUtils.hasText(config.getScanMode()) ? config.getScanMode() : DEFAULT_SCAN_MODE);
+                : StringUtils.hasText(config.getScanMode()) ? config.getScanMode() : DataMonitorConstants.SCAN_MODE_ID_INCREMENT);
         config.setQualityCheckIntervalSeconds(request.qualityCheckIntervalSeconds() != null
                 ? request.qualityCheckIntervalSeconds()
                 : config.getQualityCheckIntervalSeconds() != null
                 ? config.getQualityCheckIntervalSeconds()
-                : DEFAULT_QUALITY_CHECK_INTERVAL_SECONDS);
+                : DataMonitorConstants.DEFAULT_LOG_QUALITY_CHECK_INTERVAL_SECONDS);
         config.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
         config.setQualityRules(request.qualityRules() == null ? config.getQualityRules()
                 : JSON.toJSONString(request.qualityRules()));

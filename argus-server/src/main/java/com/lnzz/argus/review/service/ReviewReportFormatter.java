@@ -7,7 +7,6 @@ import com.lnzz.argus.review.entity.ReviewTask;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -61,12 +60,7 @@ public class ReviewReportFormatter {
                 .append(score.getScoreLevel()).append("（").append(levelLabel).append("）** |\n\n");
 
         // 结论
-        int blockThreshold = config.getScoring().getBlockThreshold();
-        if (score.isPassed()) {
-            sb.append("> ✅ **评审通过**，代码允许合并\n\n");
-        } else {
-            sb.append("> ❌ **评审不通过**（低于 ").append(blockThreshold).append(" 分），请修复以下问题后重新提交\n\n");
-        }
+        appendDecisionSummary(sb, score, config, true);
 
         // 问题统计
         if (issues != null && !issues.isEmpty()) {
@@ -164,12 +158,7 @@ public class ReviewReportFormatter {
         sb.append("| **总分** | **").append(score.getTotalScore()).append("/100** | | **等级 ")
                 .append(score.getScoreLevel()).append("（").append(levelLabel).append("）** |\n\n");
 
-        int blockThreshold = config.getScoring().getBlockThreshold();
-        if (score.isPassed()) {
-            sb.append("> ✅ **评审通过**，代码允许合并\n");
-        } else {
-            sb.append("> ❌ **评审不通过**（低于 ").append(blockThreshold).append(" 分），请优先修复已评论问题\n");
-        }
+        appendDecisionSummary(sb, score, config, false);
 
         sb.append("\n---\n*Powered by Argus AI Review Engine*\n");
         return sb.toString();
@@ -232,10 +221,51 @@ public class ReviewReportFormatter {
                 .append(score * weight / 100).append(" |\n");
     }
 
+    private void appendDecisionSummary(StringBuilder sb,
+                                       ScoreCalculator.ScoreResult score,
+                                       ReviewConfig config,
+                                       boolean includeSpacing) {
+        if (score.isPassed()) {
+            sb.append("> ✅ **评审通过**，代码允许合并\n");
+            if (shouldShowPassReason(score, config)) {
+                for (String reason : score.getDecisionReasons()) {
+                    sb.append("> ℹ️ ").append(reason).append("\n");
+                }
+            }
+        } else {
+            sb.append("> ❌ **评审不通过**，请优先修复以下阻断原因：\n");
+            for (String reason : resolveDecisionReasons(score, config)) {
+                sb.append("> - ").append(reason).append("\n");
+            }
+        }
+        if (includeSpacing) {
+            sb.append("\n");
+        }
+    }
+
     private int countBySeverity(List<AiReviewEngine.ReviewResult.Issue> issues, String severity) {
         return (int) issues.stream()
                 .filter(issue -> severity.equals(issue.getSeverity()))
                 .count();
+    }
+
+    private List<String> resolveDecisionReasons(ScoreCalculator.ScoreResult score, ReviewConfig config) {
+        List<String> reasons = score.getDecisionReasons();
+        if (reasons == null || reasons.isEmpty()) {
+            return List.of(String.format(
+                    "总分 %d 低于阻断阈值 %d",
+                    score.getTotalScore(),
+                    config.getScoring().getBlockThreshold()));
+        }
+        return reasons;
+    }
+
+    private boolean shouldShowPassReason(ScoreCalculator.ScoreResult score, ReviewConfig config) {
+        List<String> reasons = score.getDecisionReasons();
+        if (reasons == null || reasons.isEmpty()) {
+            return false;
+        }
+        return score.getTotalScore() < config.getScoring().getBlockThreshold();
     }
 
     private String resolveLevelLabel(String level, ReviewConfig config) {

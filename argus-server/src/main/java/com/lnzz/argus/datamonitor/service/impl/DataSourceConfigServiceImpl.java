@@ -1,7 +1,7 @@
 package com.lnzz.argus.datamonitor.service.impl;
 
 import com.alibaba.fastjson2.JSON;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.lnzz.argus.common.constant.DataMonitorConstants;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.datamonitor.entity.DataMonitorConfig;
@@ -16,6 +16,7 @@ import com.lnzz.argus.error.mapper.ProjectMappingMapper;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.service.ScmConfigService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -30,12 +31,10 @@ import java.util.Objects;
  * @author lnzz
  * @since 1.0.0
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DataSourceConfigServiceImpl implements DataSourceConfigService {
-
-    private static final String DB_TYPE_MYSQL = "MYSQL";
-    private static final String DB_VERSION_57 = "5.7";
 
     private final DataSourceConfigMapper dataSourceConfigMapper;
     private final DataMonitorConfigMapper dataMonitorConfigMapper;
@@ -47,13 +46,12 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
     @Override
     public List<DataSourceConfigResponse> list(Long scmConfigId, Long mappingId) {
         requireMonitorConfig(scmConfigId, mappingId);
-        return dataSourceConfigMapper.selectList(new LambdaQueryWrapper<DataSourceConfig>()
-                        .eq(DataSourceConfig::getProjectMappingId, mappingId)
-                        .orderByAsc(DataSourceConfig::getDatasourceCode)
-                        .orderByAsc(DataSourceConfig::getId))
+        List<DataSourceConfigResponse> responses = dataSourceConfigMapper.findByMappingId(mappingId)
                 .stream()
                 .map(this::toResponse)
                 .toList();
+        log.debug("查询数据源配置: scmConfigId={}, mappingId={}, count={}", scmConfigId, mappingId, responses.size());
+        return responses;
     }
 
     @Override
@@ -67,6 +65,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         config.setProjectMappingId(mappingId);
         applyRequest(config, request);
         dataSourceConfigMapper.insert(config);
+        log.info("创建只读数据源配置: datasourceId={}, mappingId={}, datasourceCode={}, username={}",
+                config.getId(), mappingId, config.getDatasourceCode(), config.getUsername());
         return toResponse(config);
     }
 
@@ -84,6 +84,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         config.setMonitorConfigId(monitorConfig.getId());
         applyRequest(config, request);
         dataSourceConfigMapper.updateById(config);
+        log.info("更新只读数据源配置: datasourceId={}, mappingId={}, datasourceCode={}, username={}",
+                datasourceId, mappingId, config.getDatasourceCode(), config.getUsername());
         return toResponse(config);
     }
 
@@ -94,6 +96,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         DataSourceConfig config = requireDatasource(mappingId, datasourceId);
         config.setEnabled(request != null && Boolean.TRUE.equals(request.enabled()));
         dataSourceConfigMapper.updateById(config);
+        log.info("切换只读数据源启用状态: datasourceId={}, mappingId={}, enabled={}",
+                datasourceId, mappingId, config.getEnabled());
         return toResponse(config);
     }
 
@@ -107,6 +111,8 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
             throw new BizException(ResultCode.PARAM_ERROR, "数据源测试需要 jdbcUrl、username、password");
         }
         validateMysqlJdbcUrl(request.jdbcUrl());
+        log.info("测试新数据源连接: scmConfigId={}, mappingId={}, jdbcUrl={}, username={}",
+                scmConfigId, mappingId, maskJdbcUrl(request.jdbcUrl()), request.username().trim());
         return connectivityTester.test(new DataSourceConnectivityTester.DataSourceConnectionRequest(
                 request.jdbcUrl().trim(), request.username().trim(), request.password()));
     }
@@ -130,6 +136,7 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
             try {
                 password = secretCodec.decrypt(datasource.getPasswordSecret());
             } catch (IllegalStateException ex) {
+                log.warn("已保存数据源密码解密失败: datasourceId={}, mappingId={}", datasourceId, mappingId);
                 throw new BizException(ResultCode.PARAM_ERROR, "已保存数据源密码无法解密，请重新输入密码后测试或保存");
             }
         }
@@ -137,16 +144,15 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
             throw new BizException(ResultCode.PARAM_ERROR, "已有数据源缺少 jdbcUrl、username 或 passwordSecret");
         }
         validateMysqlJdbcUrl(jdbcUrl);
+        log.info("测试已有数据源连接: datasourceId={}, mappingId={}, jdbcUrl={}, username={}",
+                datasourceId, mappingId, maskJdbcUrl(jdbcUrl), username);
         return connectivityTester.test(new DataSourceConnectivityTester.DataSourceConnectionRequest(
                 jdbcUrl, username, password));
     }
 
     private DataMonitorConfig requireMonitorConfig(Long scmConfigId, Long mappingId) {
         requireMappingBelongsToScm(scmConfigId, mappingId);
-        DataMonitorConfig config = dataMonitorConfigMapper.selectOne(new LambdaQueryWrapper<DataMonitorConfig>()
-                .eq(DataMonitorConfig::getScmConfigId, scmConfigId)
-                .eq(DataMonitorConfig::getProjectMappingId, mappingId)
-                .last("limit 1"));
+        DataMonitorConfig config = dataMonitorConfigMapper.findByScmAndMapping(scmConfigId, mappingId);
         if (config == null) {
             throw new BizException(ResultCode.NOT_FOUND, "请先创建应用级数据监控总配置");
         }
@@ -155,7 +161,7 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
 
     private ProjectMapping requireMappingBelongsToScm(Long scmConfigId, Long mappingId) {
         ScmConfig scmConfig = scmConfigService.requireById(scmConfigId);
-        ProjectMapping mapping = projectMappingMapper.selectById(mappingId);
+        ProjectMapping mapping = projectMappingMapper.findById(mappingId);
         if (mapping == null) {
             throw new BizException(ResultCode.NOT_FOUND, "应用映射不存在: " + mappingId);
         }
@@ -163,14 +169,17 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
                 normalizeProvider(mapping.getScmProvider()));
         boolean sameProject = Objects.equals(scmConfig.getProjectId(), mapping.getScmProjectId());
         if (!sameProvider || !sameProject) {
+            log.warn("应用映射归属校验失败: scmConfigId={}, mappingId={}, scmProvider={}, mappingProvider={}, scmProjectId={}, mappingProjectId={}",
+                    scmConfigId, mappingId, scmConfig.getScmProvider(), mapping.getScmProvider(),
+                    scmConfig.getProjectId(), mapping.getScmProjectId());
             throw new BizException(ResultCode.PARAM_ERROR, "应用映射不属于当前 SCM 配置");
         }
         return mapping;
     }
 
     private DataSourceConfig requireDatasource(Long mappingId, Long datasourceId) {
-        DataSourceConfig config = dataSourceConfigMapper.selectById(datasourceId);
-        if (config == null || !Objects.equals(config.getProjectMappingId(), mappingId)) {
+        DataSourceConfig config = dataSourceConfigMapper.findByIdAndMappingId(mappingId, datasourceId);
+        if (config == null) {
             throw new BizException(ResultCode.NOT_FOUND, "数据源配置不存在: " + datasourceId);
         }
         return config;
@@ -196,11 +205,11 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
             throw new BizException(ResultCode.PARAM_ERROR, "数据源账号必须标记为只读");
         }
         if (StringUtils.hasText(request.dbType())
-                && !DB_TYPE_MYSQL.equalsIgnoreCase(request.dbType().trim())) {
+                && !DataMonitorConstants.DB_TYPE_MYSQL.equalsIgnoreCase(request.dbType().trim())) {
             throw new BizException(ResultCode.PARAM_ERROR, "首版仅支持 MySQL 数据源");
         }
         if (StringUtils.hasText(request.dbVersion())
-                && !request.dbVersion().trim().startsWith(DB_VERSION_57)) {
+                && !request.dbVersion().trim().startsWith(DataMonitorConstants.DB_VERSION_MYSQL_57_PREFIX)) {
             throw new BizException(ResultCode.PARAM_ERROR, "首版仅支持 MySQL 5.7");
         }
         if (StringUtils.hasText(request.jdbcUrl())) {
@@ -232,16 +241,13 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
 
     private void validateMysqlJdbcUrl(String jdbcUrl) {
         String value = jdbcUrl.trim().toLowerCase(Locale.ROOT);
-        if (!value.startsWith("jdbc:mysql://")) {
+        if (!value.startsWith(DataMonitorConstants.MYSQL_JDBC_PREFIX)) {
             throw new BizException(ResultCode.PARAM_ERROR, "JDBC 地址必须是 MySQL 连接");
         }
     }
 
     private void ensureDatasourceCodeUnique(Long mappingId, String datasourceCode, Long excludedId) {
-        DataSourceConfig existing = dataSourceConfigMapper.selectOne(new LambdaQueryWrapper<DataSourceConfig>()
-                .eq(DataSourceConfig::getProjectMappingId, mappingId)
-                .eq(DataSourceConfig::getDatasourceCode, datasourceCode)
-                .last("limit 1"));
+        DataSourceConfig existing = dataSourceConfigMapper.findByCode(mappingId, datasourceCode);
         if (existing != null && !Objects.equals(existing.getId(), excludedId)) {
             throw new BizException(ResultCode.PARAM_ERROR, "同一应用下数据源编码已存在: " + datasourceCode);
         }
@@ -255,12 +261,12 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         if (StringUtils.hasText(request.dbType())) {
             config.setDbType(request.dbType().trim().toUpperCase(Locale.ROOT));
         } else if (!StringUtils.hasText(config.getDbType())) {
-            config.setDbType(DB_TYPE_MYSQL);
+            config.setDbType(DataMonitorConstants.DB_TYPE_MYSQL);
         }
         if (StringUtils.hasText(request.dbVersion())) {
             config.setDbVersion(request.dbVersion().trim());
         } else if (!StringUtils.hasText(config.getDbVersion())) {
-            config.setDbVersion(DB_VERSION_57);
+            config.setDbVersion(DataMonitorConstants.DB_VERSION_MYSQL_57_PREFIX);
         }
         if (StringUtils.hasText(request.jdbcUrl())) {
             String jdbcUrl = request.jdbcUrl().trim();
@@ -281,9 +287,11 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         config.setReadonly(Boolean.TRUE);
         config.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
         config.setRuntimeCollectIntervalSeconds(integerOrDefault(request.runtimeCollectIntervalSeconds(),
-                integerOrDefault(config.getRuntimeCollectIntervalSeconds(), 30)));
+                integerOrDefault(config.getRuntimeCollectIntervalSeconds(),
+                        DataMonitorConstants.DEFAULT_RUNTIME_COLLECT_INTERVAL_SECONDS)));
         config.setPoolMetricPushIntervalSeconds(integerOrDefault(request.poolMetricPushIntervalSeconds(),
-                integerOrDefault(config.getPoolMetricPushIntervalSeconds(), 30)));
+                integerOrDefault(config.getPoolMetricPushIntervalSeconds(),
+                        DataMonitorConstants.DEFAULT_POOL_METRIC_PUSH_INTERVAL_SECONDS)));
         applyCollectOptions(config, request.collectOptions());
         config.setThresholdConfig(request.thresholds() == null ? config.getThresholdConfig()
                 : JSON.toJSONString(request.thresholds()));
@@ -316,7 +324,7 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
         try {
             URI uri = URI.create(jdbcUrl.substring("jdbc:".length()));
             config.setHost(uri.getHost());
-            config.setPort(uri.getPort() > 0 ? uri.getPort() : 3306);
+            config.setPort(uri.getPort() > 0 ? uri.getPort() : DataMonitorConstants.DEFAULT_MYSQL_PORT);
             String path = uri.getPath();
             if (StringUtils.hasText(path) && path.length() > 1) {
                 config.setDatabaseName(path.substring(1));
@@ -367,5 +375,13 @@ public class DataSourceConfigServiceImpl implements DataSourceConfigService {
 
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String maskJdbcUrl(String jdbcUrl) {
+        if (!StringUtils.hasText(jdbcUrl)) {
+            return "";
+        }
+        int paramIndex = jdbcUrl.indexOf('?');
+        return paramIndex >= 0 ? jdbcUrl.substring(0, paramIndex) + "?***" : jdbcUrl;
     }
 }

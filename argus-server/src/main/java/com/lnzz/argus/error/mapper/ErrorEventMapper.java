@@ -1,6 +1,9 @@
 package com.lnzz.argus.error.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.knowledge.model.ErrorFingerprintSummary;
 import org.apache.ibatis.annotations.Mapper;
@@ -19,6 +22,169 @@ import java.util.List;
  */
 @Mapper
 public interface ErrorEventMapper extends BaseMapper<ErrorEvent> {
+
+    /**
+     * 按主键查询错误事件。
+     *
+     * @param eventId 事件 ID
+     * @return 错误事件
+     */
+    default ErrorEvent findById(Long eventId) {
+        return selectById(eventId);
+    }
+
+    /**
+     * 统计全部错误事件。
+     *
+     * @return 事件总数
+     */
+    default long countAll() {
+        return selectCount(null);
+    }
+
+    /**
+     * 分页查询错误事件。
+     *
+     * @param pageNo      页码
+     * @param pageSize    每页数量
+     * @param appName     应用名
+     * @param environment 环境
+     * @param severity    严重度
+     * @param status      处理状态
+     * @param keyword     关键词
+     * @return 错误事件分页
+     */
+    default Page<ErrorEvent> queryEvents(long pageNo, long pageSize, String appName, String environment,
+                                         String severity, String status, String keyword) {
+        LambdaQueryWrapper<ErrorEvent> wrapper = new LambdaQueryWrapper<ErrorEvent>()
+                .eq(hasText(appName), ErrorEvent::getAppName, appName)
+                .eq(hasText(environment), ErrorEvent::getEnvironment, environment)
+                .eq(hasText(severity), ErrorEvent::getSeverity, severity)
+                .eq(hasText(status), ErrorEvent::getProcessingStatus, status)
+                .and(hasText(keyword), query -> query
+                        .like(ErrorEvent::getErrorMessage, keyword)
+                        .or()
+                        .like(ErrorEvent::getErrorFingerprint, keyword)
+                        .or()
+                        .like(ErrorEvent::getClassName, keyword)
+                        .or()
+                        .like(ErrorEvent::getInterfaceRef, keyword))
+                .orderByDesc(ErrorEvent::getLastOccurredAt)
+                .orderByDesc(ErrorEvent::getOccurredAt)
+                .orderByDesc(ErrorEvent::getId);
+        return selectPage(new Page<>(pageNo, pageSize), wrapper);
+    }
+
+    /**
+     * 查询同指纹错误事件。
+     *
+     * @param fingerprint 错误指纹
+     * @param limit       最大返回数量
+     * @return 错误事件列表
+     */
+    default List<ErrorEvent> findByFingerprint(String fingerprint, int limit) {
+        return selectList(new LambdaQueryWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getErrorFingerprint, fingerprint)
+                .orderByDesc(ErrorEvent::getLastOccurredAt)
+                .orderByDesc(ErrorEvent::getOccurredAt)
+                .last("LIMIT " + limit));
+    }
+
+    /**
+     * 按严重度统计错误事件。
+     *
+     * @param severity 严重度
+     * @return 事件数量
+     */
+    default long countBySeverity(String severity) {
+        return selectCount(new LambdaQueryWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getSeverity, severity));
+    }
+
+    /**
+     * 按处理状态统计错误事件。
+     *
+     * @param status 处理状态
+     * @return 事件数量
+     */
+    default long countByProcessingStatus(String status) {
+        return selectCount(new LambdaQueryWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getProcessingStatus, status));
+    }
+
+    /**
+     * 统计尚未分析的错误事件。
+     *
+     * @return 尚未分析的事件数量
+     */
+    default long countUnanalyzed() {
+        return selectCount(new LambdaQueryWrapper<ErrorEvent>()
+                .and(query -> query.eq(ErrorEvent::getAnalyzed, false).or().isNull(ErrorEvent::getAnalyzed)));
+    }
+
+    /**
+     * 更新错误事件分析状态。
+     *
+     * @param eventId 事件 ID
+     * @param analyzed 是否已分析
+     * @param status   处理状态
+     * @return 更新行数
+     */
+    default int updateAnalysisState(Long eventId, boolean analyzed, String status) {
+        return update(null, new LambdaUpdateWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getId, eventId)
+                .set(ErrorEvent::getAnalyzed, analyzed)
+                .set(ErrorEvent::getProcessingStatus, status));
+    }
+
+    /**
+     * 更新错误事件处理状态和原因。
+     *
+     * @param eventId 事件 ID
+     * @param status  处理状态
+     * @param reason  原因
+     * @return 更新行数
+     */
+    default int updateStatus(Long eventId, String status, String reason) {
+        return update(null, new LambdaUpdateWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getId, eventId)
+                .set(ErrorEvent::getProcessingStatus, status)
+                .set(ErrorEvent::getSeverityReason, reason));
+    }
+
+    /**
+     * 标记错误事件为误报。
+     *
+     * @param eventId           事件 ID
+     * @param status           处理状态
+     * @param analysisDecision 分析决策
+     * @param reason           原因
+     * @return 更新行数
+     */
+    default int markFalsePositive(Long eventId, String status, String analysisDecision, String reason) {
+        return update(null, new LambdaUpdateWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getId, eventId)
+                .set(ErrorEvent::getProcessingStatus, status)
+                .set(ErrorEvent::getAnalysisDecision, analysisDecision)
+                .set(ErrorEvent::getSeverityReason, reason));
+    }
+
+    /**
+     * 回写错误事件通知状态。
+     *
+     * @param eventId 事件 ID
+     * @param notified 是否已通知
+     * @return 更新行数
+     */
+    default int updateNotified(Long eventId, boolean notified) {
+        return update(null, new LambdaUpdateWrapper<ErrorEvent>()
+                .eq(ErrorEvent::getId, eventId)
+                .set(ErrorEvent::getNotified, notified));
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
 
     /**
      * 查找指定指纹最近一条事件（用于聚合去重）

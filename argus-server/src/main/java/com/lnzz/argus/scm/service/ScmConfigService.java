@@ -1,5 +1,6 @@
 package com.lnzz.argus.scm.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lnzz.argus.scm.entity.ScmConfig;
 
 import java.util.List;
@@ -12,6 +13,18 @@ import java.util.List;
  * @since 1.0.0
  */
 public interface ScmConfigService {
+
+    /**
+     * 分页查询 SCM 配置。
+     *
+     * @param pageNo      页码
+     * @param pageSize    每页大小
+     * @param scmProvider SCM 提供方
+     * @param enabled     启用状态
+     * @param keyword     关键字
+     * @return SCM 配置分页结果
+     */
+    Page<ScmConfig> pageConfigs(int pageNo, int pageSize, String scmProvider, Boolean enabled, String keyword);
 
     /**
      * 查询所有 SCM 配置

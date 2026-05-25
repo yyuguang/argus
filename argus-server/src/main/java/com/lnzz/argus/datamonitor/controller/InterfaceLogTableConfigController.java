@@ -6,6 +6,7 @@ import com.lnzz.argus.datamonitor.service.InterfaceLogTableConfigService.EnableR
 import com.lnzz.argus.datamonitor.service.InterfaceLogTableConfigService.InterfaceLogTableConfigRequest;
 import com.lnzz.argus.datamonitor.service.InterfaceLogTableConfigService.InterfaceLogTableConfigResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 接口日志表质量巡检配置 API。
@@ -56,5 +58,13 @@ public class InterfaceLogTableConfigController {
                                                               @PathVariable Long configId,
                                                               @RequestBody EnableRequest request) {
         return Result.success(configService.setEnabled(scmConfigId, mappingId, configId, request));
+    }
+
+    @DeleteMapping("/{configId}")
+    public Result<Map<String, Object>> delete(@PathVariable Long scmConfigId,
+                                              @PathVariable Long mappingId,
+                                              @PathVariable Long configId) {
+        configService.delete(scmConfigId, mappingId, configId);
+        return Result.success("接口日志表配置删除成功", Map.of("id", configId));
     }
 }

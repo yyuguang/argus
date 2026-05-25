@@ -4,11 +4,15 @@ import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
+import com.lnzz.argus.datamonitor.ai.SlowSqlAnalysisAiEngine;
+import com.lnzz.argus.datamonitor.ai.SlowSqlPromptBuilder;
 import com.lnzz.argus.datamonitor.entity.ConnectionPoolSnapshot;
+import com.lnzz.argus.datamonitor.entity.DataMonitorConfig;
 import com.lnzz.argus.datamonitor.entity.DataSourceConfig;
 import com.lnzz.argus.datamonitor.entity.DbLockEvent;
 import com.lnzz.argus.datamonitor.entity.SlowSqlEvent;
 import com.lnzz.argus.datamonitor.mapper.ConnectionPoolSnapshotMapper;
+import com.lnzz.argus.datamonitor.mapper.DataMonitorConfigMapper;
 import com.lnzz.argus.datamonitor.mapper.DataSourceConfigMapper;
 import com.lnzz.argus.datamonitor.mapper.DbLockEventMapper;
 import com.lnzz.argus.datamonitor.mapper.SlowSqlEventMapper;
@@ -51,10 +55,13 @@ public class SlowSqlAnalysisServiceImpl implements SlowSqlAnalysisService {
 
     private final SlowSqlEventMapper slowSqlEventMapper;
     private final DataSourceConfigMapper dataSourceConfigMapper;
+    private final DataMonitorConfigMapper dataMonitorConfigMapper;
     private final DbLockEventMapper dbLockEventMapper;
     private final ConnectionPoolSnapshotMapper connectionPoolSnapshotMapper;
     private final DataSourceSecretCodec secretCodec;
     private final MysqlSlowSqlInspector slowSqlInspector;
+    private final SlowSqlPromptBuilder slowSqlPromptBuilder;
+    private final SlowSqlAnalysisAiEngine slowSqlAnalysisAiEngine;
 
     @Override
     public SlowSqlAnalysisResult analyzeEvent(Long eventId) {
@@ -110,7 +117,17 @@ public class SlowSqlAnalysisServiceImpl implements SlowSqlAnalysisService {
             }
             List<TableInfo> tableInfos = slowSqlInspector.queryTables(datasource, password, tableNames);
             List<IndexInfo> indexInfos = slowSqlInspector.queryIndexes(datasource, password, tableNames);
-            AnalysisDecision decision = decide(event, sqlText, explainRows, tableInfos, indexInfos);
+            DbLockEvent lockEvent = event.getRelatedLockEventId() == null ? null
+                    : dbLockEventMapper.selectById(event.getRelatedLockEventId());
+            ConnectionPoolSnapshot poolSnapshot = event.getRelatedPoolSnapshotId() == null ? null
+                    : connectionPoolSnapshotMapper.selectById(event.getRelatedPoolSnapshotId());
+            AnalysisDecision decision = decide(event, sqlText, explainRows, tableInfos, indexInfos, lockEvent, poolSnapshot);
+            Long scmConfigId = resolveScmConfigId(event);
+            SlowSqlAnalysisAiEngine.SlowSqlAiResult aiResult = slowSqlAnalysisAiEngine.analyze(
+                    slowSqlPromptBuilder.buildPrompt(event, sqlText, explainRows, lockEvent, poolSnapshot,
+                            decision.causeType(), decision.riskLevel(), decision.rootCause(),
+                            decision.optimizationSuggestion(), scmConfigId),
+                    scmConfigId);
 
             event.setExplainJson(JSON.toJSONString(explainRows));
             event.setTableInfoJson(JSON.toJSONString(tableInfos));
@@ -118,12 +135,12 @@ public class SlowSqlAnalysisServiceImpl implements SlowSqlAnalysisService {
             event.setCauseType(decision.causeType());
             event.setRiskLevel(decision.riskLevel());
             event.setAnalysisStatus("DONE");
-            event.setRootCause(decision.rootCause());
-            event.setOptimizationSuggestion(decision.optimizationSuggestion());
+            event.setRootCause(resolveRootCause(decision, aiResult));
+            event.setOptimizationSuggestion(resolveOptimizationSuggestion(decision, aiResult));
             event.setIndexSuggestionSql(decision.indexSuggestionSql());
             event.setNeedDba(decision.needDba());
             event.setNeedDeveloper(true);
-            event.setConfidence(decision.confidence());
+            event.setConfidence(resolveConfidence(decision, aiResult));
             slowSqlEventMapper.updateById(event);
             return result(event, "分析完成");
         } catch (Exception e) {
@@ -136,11 +153,9 @@ public class SlowSqlAnalysisServiceImpl implements SlowSqlAnalysisService {
                                     String sqlText,
                                     List<ExplainRow> explainRows,
                                     List<TableInfo> tableInfos,
-                                    List<IndexInfo> indexInfos) {
-        DbLockEvent lockEvent = event.getRelatedLockEventId() == null ? null
-                : dbLockEventMapper.selectById(event.getRelatedLockEventId());
-        ConnectionPoolSnapshot poolSnapshot = event.getRelatedPoolSnapshotId() == null ? null
-                : connectionPoolSnapshotMapper.selectById(event.getRelatedPoolSnapshotId());
+                                    List<IndexInfo> indexInfos,
+                                    DbLockEvent lockEvent,
+                                    ConnectionPoolSnapshot poolSnapshot) {
         String lowerSql = sqlText.toLowerCase(Locale.ROOT);
 
         if (lockEvent != null || containsLockState(event)) {
@@ -258,6 +273,71 @@ public class SlowSqlAnalysisServiceImpl implements SlowSqlAnalysisService {
     private boolean containsLockState(SlowSqlEvent event) {
         String state = event.getProcessState();
         return StringUtils.hasText(state) && state.toUpperCase(Locale.ROOT).contains("LOCK");
+    }
+
+    private Long resolveScmConfigId(SlowSqlEvent event) {
+        if (event.getMonitorConfigId() == null) {
+            return null;
+        }
+        DataMonitorConfig config = dataMonitorConfigMapper.selectById(event.getMonitorConfigId());
+        return config == null ? null : config.getScmConfigId();
+    }
+
+    private String resolveRootCause(AnalysisDecision decision, SlowSqlAnalysisAiEngine.SlowSqlAiResult aiResult) {
+        if (aiResult == null) {
+            return decision.rootCause();
+        }
+        StringBuilder sb = new StringBuilder();
+        if (StringUtils.hasText(aiResult.summary())) {
+            sb.append(aiResult.summary().trim());
+        } else if (StringUtils.hasText(aiResult.primaryCause())) {
+            sb.append(aiResult.primaryCause().trim());
+        }
+        if (StringUtils.hasText(aiResult.impactScope())) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append("影响范围：").append(aiResult.impactScope().trim());
+        }
+        if (aiResult.rootCauseLines() != null && !aiResult.rootCauseLines().isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(String.join("\n", aiResult.rootCauseLines()));
+        }
+        return StringUtils.hasText(sb.toString()) ? sb.toString() : decision.rootCause();
+    }
+
+    private String resolveOptimizationSuggestion(AnalysisDecision decision, SlowSqlAnalysisAiEngine.SlowSqlAiResult aiResult) {
+        if (aiResult == null) {
+            return decision.optimizationSuggestion();
+        }
+        StringBuilder sb = new StringBuilder();
+        if (aiResult.optimizationSuggestions() != null && !aiResult.optimizationSuggestions().isEmpty()) {
+            sb.append("优化建议：\n- ")
+                    .append(String.join("\n- ", aiResult.optimizationSuggestions()));
+        }
+        if (aiResult.actionPlan() != null && !aiResult.actionPlan().isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append("执行动作：\n- ")
+                    .append(String.join("\n- ", aiResult.actionPlan()));
+        }
+        if (sb.length() == 0 && StringUtils.hasText(decision.optimizationSuggestion())) {
+            return decision.optimizationSuggestion();
+        }
+        if (StringUtils.hasText(decision.optimizationSuggestion())) {
+            sb.append("\n规则兜底建议：").append(decision.optimizationSuggestion());
+        }
+        return sb.toString();
+    }
+
+    private BigDecimal resolveConfidence(AnalysisDecision decision, SlowSqlAnalysisAiEngine.SlowSqlAiResult aiResult) {
+        if (aiResult == null) {
+            return decision.confidence();
+        }
+        return aiResult.blocker() ? BigDecimal.valueOf(0.85) : BigDecimal.valueOf(0.75);
     }
 
     private String firstTable(List<TableInfo> tableInfos) {

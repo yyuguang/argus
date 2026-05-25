@@ -1,11 +1,7 @@
 package com.lnzz.argus.error.controller;
 
-import com.lnzz.argus.common.exception.BizException;
-import com.lnzz.argus.common.result.ResultCode;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,22 +20,10 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/internal/self-test/phase2")
 public class Phase2SelfTestController {
 
-    @Value("${argus.internal.token:argustest}")
-    private String internalToken;
-
     @GetMapping("/bug")
-    public void triggerNullPointerBug(@RequestHeader("X-Argus-Token") String token,
-                                      @RequestParam(defaultValue = "phase2-chain-test") String businessKey) {
-        validateToken(token);
+    public void triggerNullPointerBug(@RequestParam(defaultValue = "phase2-chain-test") String businessKey) {
         log.info("Phase2 自测故障触发: businessKey={}", businessKey);
         String nullableMarker = null;
         nullableMarker.length();
-    }
-
-    private void validateToken(String token) {
-        if (token == null || !token.equals(internalToken)) {
-            log.warn("Phase2 自测故障接口 Token 校验失败");
-            throw new BizException(ResultCode.UNAUTHORIZED, "内部 API Token 无效");
-        }
     }
 }

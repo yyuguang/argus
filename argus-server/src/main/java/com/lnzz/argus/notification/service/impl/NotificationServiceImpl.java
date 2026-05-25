@@ -2,15 +2,14 @@ package com.lnzz.argus.notification.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.alibaba.fastjson2.JSON;
+import com.lnzz.argus.common.constant.NotificationConstants;
 import com.lnzz.argus.config.NotificationProperties;
 import com.lnzz.argus.error.entity.ProjectMapping;
 import com.lnzz.argus.error.mapper.ProjectMappingMapper;
 import com.lnzz.argus.notification.service.AlertTemplateBuilder;
-import com.lnzz.argus.notification.service.DingTalkWebhookClient;
-import com.lnzz.argus.notification.service.FeishuWebhookClient;
 import com.lnzz.argus.notification.service.NotificationRouter;
+import com.lnzz.argus.notification.service.ScmNotificationDispatcher;
 import com.lnzz.argus.notification.service.NotificationService;
-import com.lnzz.argus.notification.service.WechatWebhookClient;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.common.enums.SourceType;
@@ -22,6 +21,7 @@ import com.lnzz.argus.review.config.ReviewConfig;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.mapper.ScmConfigMapper;
+import com.lnzz.argus.scm.service.ScmReviewConfigSupport;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -44,20 +44,15 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class NotificationServiceImpl implements NotificationService {
 
-    private final WechatWebhookClient wechatClient;
-    private final FeishuWebhookClient feishuClient;
-    private final DingTalkWebhookClient dingtalkClient;
     private final NotificationRecordMapper recordMapper;
     private final StringRedisTemplate redisTemplate;
     private final NotificationProperties properties;
     private final NotificationRouter router;
+    private final ScmNotificationDispatcher scmNotificationDispatcher;
     private final AlertTemplateBuilder templateBuilder;
     private final ProjectMappingMapper projectMappingMapper;
     private final ScmConfigMapper scmConfigMapper;
-
-    private static final String RATE_KEY_PREFIX = "argus:notify:rate:";
-    private static final String SILENCE_KEY_PREFIX = "argus:notify:silence:";
-    private static final String GLOBAL_COUNT_KEY = "argus:notify:global:count";
+    private final ScmReviewConfigSupport scmReviewConfigSupport;
 
     // ======================== 评审通知 ========================
 
@@ -82,16 +77,6 @@ public class NotificationServiceImpl implements NotificationService {
             log.info("缺少 SCM 配置，跳过评审通知: taskId={}", task.getId());
             return false;
         }
-        if (!scmConfig.isWechatNotificationEnabled()) {
-            log.info("SCM 配置已关闭企业微信通知，跳过评审通知: taskId={}, scmConfigId={}",
-                    task.getId(), scmConfig.getId());
-            return false;
-        }
-        if (isBlank(scmConfig.getWechatNotifyWebhook())) {
-            log.info("SCM 配置未配置企业微信 webhook，跳过评审通知: taskId={}, scmConfigId={}",
-                    task.getId(), scmConfig.getId());
-            return false;
-        }
 
         String content = templateBuilder.buildReviewAlert(
                 task.getProjectName(), task.getMrIid(), task.getMrTitle(),
@@ -103,9 +88,27 @@ public class NotificationServiceImpl implements NotificationService {
         int threshold = reviewConfig != null
                 ? reviewConfig.getNotification().getScoreAlertThreshold()
                 : ReviewConfig.defaults().getNotification().getScoreAlertThreshold();
-        String channel = (!score.isPassed() || score.getTotalScore() <= threshold) ? "critical" : "default";
-        return sendWithRetry(channel, content, "REVIEW", task.getId(), "REVIEW_TASK",
-                scmConfig.getWechatNotifyWebhook(), resolveRetryConfig(reviewConfig));
+        String channel = (!score.isPassed() || score.getTotalScore() <= threshold)
+                ? NotificationConstants.CHANNEL_CRITICAL
+                : NotificationConstants.CHANNEL_DEFAULT;
+        ReviewConfig effectiveReviewConfig = reviewConfig != null
+                ? reviewConfig
+                : scmReviewConfigSupport.resolveReviewConfig(scmConfig);
+        ScmNotificationDispatcher.DispatchResult dispatchResult = scmNotificationDispatcher.dispatchMarkdown(
+                scmConfig,
+                effectiveReviewConfig.getNotification().getScoreAlertChannels(),
+                channel,
+                "Argus 评审通知",
+                content,
+                "REVIEW",
+                task.getId(),
+                "REVIEW_TASK",
+                resolveRetryConfig(effectiveReviewConfig));
+        if (!dispatchResult.success()) {
+            log.info("评审通知未发送: taskId={}, scmConfigId={}, reason={}",
+                    task.getId(), scmConfig.getId(), dispatchResult.message());
+        }
+        return dispatchResult.success();
     }
 
     // ======================== 错误告警 ========================
@@ -135,18 +138,6 @@ public class NotificationServiceImpl implements NotificationService {
                     + ", priority=" + route.priority());
             return false;
         }
-        if (!scmConfig.isWechatNotificationEnabled()) {
-            log.info("SCM 配置已关闭企业微信通知，跳过错误告警: eventId={}, appName={}, scmConfigId={}",
-                    event.getId(), event.getAppName(), scmConfig.getId());
-            saveErrorAlertSkip(event, "SCM 配置已关闭企业微信通知: scmConfigId=" + scmConfig.getId());
-            return false;
-        }
-        if (isBlank(scmConfig.getWechatNotifyWebhook())) {
-            log.info("SCM 配置未配置企业微信 webhook，跳过错误告警: eventId={}, appName={}, scmConfigId={}",
-                    event.getId(), event.getAppName(), scmConfig.getId());
-            saveErrorAlertSkip(event, "SCM 配置未配置企业微信 webhook: scmConfigId=" + scmConfig.getId());
-            return false;
-        }
 
         // 静默检查
         if (isSilenced(event)) {
@@ -161,42 +152,37 @@ public class NotificationServiceImpl implements NotificationService {
         }
 
         // 构建告警内容
-        boolean isDetailed = "urgent".equals(route.priority());
+        boolean isDetailed = NotificationConstants.PRIORITY_URGENT.equals(route.priority());
         String content = isDetailed
                 ? templateBuilder.buildDetailedAlert(event, analysis)
                 : templateBuilder.buildBriefAlert(event, analysis);
 
         String title = "[" + event.getSeverity() + "] " + event.getAppName() + " - " + event.getErrorType();
 
-        // 企微通道
-        boolean wechatOk = sendWithRetry(route.channel(), content, "ERROR_ALERT",
-                event.getId(), "ERROR_EVENT", scmConfig.getWechatNotifyWebhook(),
+        ScmNotificationDispatcher.DispatchResult dispatchResult = scmNotificationDispatcher.dispatchMarkdown(
+                scmConfig,
+                null,
+                route.channel(),
+                title,
+                content,
+                NotificationConstants.TYPE_ERROR_ALERT,
+                event.getId(),
+                NotificationConstants.REF_TYPE_ERROR_EVENT,
                 resolveRetryConfig(reviewConfig));
-
-        // 飞书通道（预留）
-        if (properties.getFeishu().isEnabled()) {
-            try {
-                feishuClient.sendInteractive(route.channel(), title, content);
-            } catch (Exception e) {
-                log.warn("飞书通知发送失败: eventId={}", event.getId(), e);
-            }
+        if (!dispatchResult.success() && dispatchResult.attemptedCount() == 0) {
+            log.info("错误告警无可用通知平台，跳过发送: eventId={}, scmConfigId={}, reason={}",
+                    event.getId(), scmConfig.getId(), dispatchResult.message());
+            saveErrorAlertSkip(event, dispatchResult.message());
+            return false;
         }
 
-        // 钉钉通道（预留）
-        if (properties.getDingtalk().isEnabled()) {
-            try {
-                dingtalkClient.sendMarkdown(route.channel(), title, content);
-            } catch (Exception e) {
-                log.warn("钉钉通知发送失败: eventId={}", event.getId(), e);
-            }
-        }
-
-        if (wechatOk) {
+        if (dispatchResult.success()) {
             markSilenced(event);
         }
-        log.info("错误告警通知完成: eventId={}, channel={}, detailed={}, sent={}",
-                event.getId(), route.channel(), isDetailed, wechatOk);
-        return wechatOk;
+        log.info("错误告警通知完成: eventId={}, channel={}, detailed={}, sent={}, attempted={}, successCount={}",
+                event.getId(), route.channel(), isDetailed, dispatchResult.success(),
+                dispatchResult.attemptedCount(), dispatchResult.successCount());
+        return dispatchResult.success();
     }
 
     @Override
@@ -214,71 +200,6 @@ public class NotificationServiceImpl implements NotificationService {
         dummyAnalysis.setRootCause(rootCause);
 
         sendErrorAlert(dummyEvent, dummyAnalysis);
-    }
-
-    // ======================== 重试机制 ========================
-
-    private boolean sendWithRetry(String channel, String content,
-                                   String type, Long refId, String refType,
-                                   String customWebhookUrl,
-                                   ReviewConfig.NotificationRetryConfig retryConfig) {
-        if (!properties.isEnabled()) {
-            log.info("通知总开关已关闭，跳过发送: type={}, refId={}", type, refId);
-            saveRecord(type, refId, refType, "通知总开关已关闭",
-                    NotificationStatus.SKIPPED.getCode(), 0, "通知总开关已关闭", null);
-            return false;
-        }
-        if (isBlank(customWebhookUrl)) {
-            log.info("未配置 SCM 企业微信 webhook，跳过发送: type={}, refId={}, channel={}", type, refId, channel);
-            saveRecord(type, refId, refType, "未配置 SCM 企业微信 webhook",
-                    NotificationStatus.SKIPPED.getCode(), 0, "未配置 SCM 企业微信 webhook", null);
-            return false;
-        }
-        ReviewConfig.NotificationRetryConfig effectiveRetry = retryConfig != null
-                ? retryConfig
-                : ReviewConfig.defaults().getNotification().getRetry();
-        int maxRetries = Math.max(0, effectiveRetry.getMaxRetries());
-        var backoffSeconds = effectiveRetry.getBackoffSeconds() != null
-                ? effectiveRetry.getBackoffSeconds()
-                : ReviewConfig.defaults().getNotification().getRetry().getBackoffSeconds();
-        int timeoutSec = Math.max(1, effectiveRetry.getTimeoutSec());
-        long deadlineMillis = System.currentTimeMillis() + timeoutSec * 1000L;
-        Exception lastException = null;
-
-        for (int attempt = 0; attempt <= maxRetries; attempt++) {
-            if (attempt > 0) {
-                int delay = attempt <= backoffSeconds.size()
-                        ? Math.max(0, backoffSeconds.get(attempt - 1)) : 300;
-                if (System.currentTimeMillis() + delay * 1000L > deadlineMillis) {
-                    log.warn("通知重试超时窗口不足，停止重试: type={}, refId={}, attempt={}, timeoutSec={}",
-                            type, refId, attempt, timeoutSec);
-                    break;
-                }
-                log.info("通知重试: attempt={}/{}, delay={}s, timeoutSec={}", attempt, maxRetries, delay, timeoutSec);
-                try {
-                    Thread.sleep(delay * 1000L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-
-            try {
-                boolean success = wechatClient.sendMarkdown(channel, content, customWebhookUrl);
-                if (success) {
-                    saveRecord(type, refId, refType, content, true, attempt);
-                    return true;
-                }
-            } catch (Exception e) {
-                lastException = e;
-                log.warn("通知发送失败(attempt={}): channel={}, error={}",
-                        attempt, channel, e.getMessage());
-            }
-        }
-
-        log.error("通知发送全部重试失败: type={}, refId={}", type, refId, lastException);
-        saveRecord(type, refId, refType, content, false, maxRetries);
-        return false;
     }
 
     private ReviewConfig.NotificationRetryConfig resolveRetryConfig(ReviewConfig reviewConfig) {
@@ -308,17 +229,7 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     private ReviewConfig resolveReviewConfig(ScmConfig scmConfig) {
-        ReviewConfig defaults = ReviewConfig.defaults();
-        if (scmConfig == null || isBlank(scmConfig.getReviewConfig())) {
-            return defaults;
-        }
-        try {
-            return defaults.merge(JSON.parseObject(scmConfig.getReviewConfig(), ReviewConfig.class));
-        } catch (Exception e) {
-            log.warn("SCM reviewConfig 解析失败，使用默认通知路由: scmConfigId={}, error={}",
-                    scmConfig.getId(), e.getMessage());
-            return defaults;
-        }
+        return scmReviewConfigSupport.resolveReviewConfig(scmConfig);
     }
 
     private boolean isBlank(String value) {
@@ -340,14 +251,14 @@ public class NotificationServiceImpl implements NotificationService {
         String key;
         int interval;
         if ("P3".equals(event.getSeverity())) {
-            key = SILENCE_KEY_PREFIX + "p3:" + event.getAppName();
+            key = NotificationConstants.SILENCE_KEY_PREFIX + "p3:" + event.getAppName();
             interval = silence.getP3Interval();
         } else {
             String fingerprint = event.getErrorFingerprint();
             if (fingerprint == null || fingerprint.isEmpty()) {
                 return false;
             }
-            key = SILENCE_KEY_PREFIX + fingerprint;
+            key = NotificationConstants.SILENCE_KEY_PREFIX + fingerprint;
             interval = silence.getFingerprintInterval();
         }
 
@@ -360,12 +271,12 @@ public class NotificationServiceImpl implements NotificationService {
         String key;
         int interval;
         if ("P3".equals(event.getSeverity())) {
-            key = SILENCE_KEY_PREFIX + "p3:" + event.getAppName();
+            key = NotificationConstants.SILENCE_KEY_PREFIX + "p3:" + event.getAppName();
             interval = silence.getP3Interval();
         } else {
             String fingerprint = event.getErrorFingerprint();
             if (fingerprint == null || fingerprint.isEmpty()) return;
-            key = SILENCE_KEY_PREFIX + fingerprint;
+            key = NotificationConstants.SILENCE_KEY_PREFIX + fingerprint;
             interval = silence.getFingerprintInterval();
         }
         redisTemplate.opsForValue().set(key, "1", interval, TimeUnit.SECONDS);
@@ -373,9 +284,9 @@ public class NotificationServiceImpl implements NotificationService {
 
     private boolean checkGlobalRate() {
         int maxPerHour = properties.getSilence().getGlobalMaxPerHour();
-        Long count = redisTemplate.opsForValue().increment(GLOBAL_COUNT_KEY);
+        Long count = redisTemplate.opsForValue().increment(NotificationConstants.GLOBAL_COUNT_KEY);
         if (count == 1) {
-            redisTemplate.expire(GLOBAL_COUNT_KEY, 1, TimeUnit.HOURS);
+            redisTemplate.expire(NotificationConstants.GLOBAL_COUNT_KEY, 1, TimeUnit.HOURS);
         }
         return count == null || count <= maxPerHour;
     }
@@ -383,7 +294,7 @@ public class NotificationServiceImpl implements NotificationService {
     // ======================== 基础工具 ========================
 
     private boolean isDuplicate(String key, int ttlSeconds) {
-        String redisKey = RATE_KEY_PREFIX + key;
+        String redisKey = NotificationConstants.RATE_KEY_PREFIX + key;
         Boolean exists = redisTemplate.hasKey(redisKey);
         if (Boolean.TRUE.equals(exists)) {
             return true;
@@ -404,7 +315,7 @@ public class NotificationServiceImpl implements NotificationService {
     private void saveErrorAlertSkip(ErrorEvent event, String reason) {
         Long eventId = event == null ? null : event.getId();
         String summary = buildErrorAlertSkipSummary(event, reason);
-        saveRecord("ERROR_ALERT", eventId, "ERROR_EVENT", summary,
+        saveRecord(NotificationConstants.TYPE_ERROR_ALERT, eventId, NotificationConstants.REF_TYPE_ERROR_EVENT, summary,
                 NotificationStatus.SKIPPED.getCode(), 0, reason, null);
     }
 

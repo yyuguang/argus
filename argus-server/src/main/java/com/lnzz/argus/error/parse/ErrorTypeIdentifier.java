@@ -1,6 +1,6 @@
 package com.lnzz.argus.error.parse;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.lnzz.argus.common.constant.ErrorTypeRuleConstants;
 import com.lnzz.argus.common.enums.ErrorType;
 import com.lnzz.argus.error.entity.ErrorTypeRule;
 import com.lnzz.argus.error.mapper.ErrorTypeRuleMapper;
@@ -26,7 +26,6 @@ import java.util.regex.Pattern;
 @Component
 public class ErrorTypeIdentifier {
 
-    private static final long RULE_CACHE_MILLIS = 30_000L;
     private static final Pattern EXCEPTION_TOKEN = Pattern.compile(
             "([\\w.$]+(?:Exception|Error|Throwable))");
     private static final Pattern EXCEPTION_TYPE_META = Pattern.compile(
@@ -96,7 +95,7 @@ public class ErrorTypeIdentifier {
             return null;
         }
         List<ErrorTypeRule> rules = enabledRules().stream()
-                .filter(rule -> "HTTP_STATUS".equalsIgnoreCase(rule.getMatchField()))
+                .filter(rule -> ErrorTypeRuleConstants.MATCH_FIELD_HTTP_STATUS.equalsIgnoreCase(rule.getMatchField()))
                 .toList();
         if (!rules.isEmpty()) {
             for (ErrorTypeRule rule : rules) {
@@ -176,7 +175,7 @@ public class ErrorTypeIdentifier {
 
     private ErrorType identifyByRules(ErrorLogEntry entry, List<ErrorTypeRule> rules) {
         for (ErrorTypeRule rule : rules) {
-            if ("HTTP_STATUS".equalsIgnoreCase(rule.getMatchField())) {
+            if (ErrorTypeRuleConstants.MATCH_FIELD_HTTP_STATUS.equalsIgnoreCase(rule.getMatchField())) {
                 continue;
             }
             if (matches(rule, entry)) {
@@ -200,17 +199,14 @@ public class ErrorTypeIdentifier {
             return cachedRules;
         }
         try {
-            List<ErrorTypeRule> rules = ruleMapper.selectList(new LambdaQueryWrapper<ErrorTypeRule>()
-                    .eq(ErrorTypeRule::getEnabled, true)
-                    .orderByAsc(ErrorTypeRule::getPriority)
-                    .orderByAsc(ErrorTypeRule::getId));
+            List<ErrorTypeRule> rules = ruleMapper.findEnabledRules();
             cachedRules = rules == null ? List.of() : rules;
-            cacheExpireAt = now + RULE_CACHE_MILLIS;
+            cacheExpireAt = now + ErrorTypeRuleConstants.RULE_CACHE_MILLIS;
             return cachedRules;
         } catch (Exception e) {
             log.warn("加载错误类型识别规则失败，临时回退内置规则: {}", e.getMessage());
             cachedRules = List.of();
-            cacheExpireAt = now + 5_000L;
+            cacheExpireAt = now + ErrorTypeRuleConstants.RULE_LOAD_RETRY_CACHE_MILLIS;
             return cachedRules;
         }
     }
@@ -222,22 +218,22 @@ public class ErrorTypeIdentifier {
         if (pattern == null || pattern.isBlank()) {
             return false;
         }
-        if ("ANY".equals(field)) {
+        if (ErrorTypeRuleConstants.MATCH_FIELD_ANY.equals(field)) {
             return matchesText(mode, pattern, entry.getClassName())
                     || matchesText(mode, pattern, entry.getMessage())
                     || matchesText(mode, pattern, entry.getStackTrace())
                     || exceptionClasses(entry).stream().anyMatch(value -> matchesClass(mode, pattern, value));
         }
-        if ("EXCEPTION_CLASS".equals(field)) {
+        if (ErrorTypeRuleConstants.MATCH_FIELD_EXCEPTION_CLASS.equals(field)) {
             return exceptionClasses(entry).stream().anyMatch(value -> matchesClass(mode, pattern, value));
         }
-        if ("CLASS_NAME".equals(field)) {
+        if (ErrorTypeRuleConstants.MATCH_FIELD_CLASS_NAME.equals(field)) {
             return matchesClass(mode, pattern, entry.getClassName());
         }
-        if ("MESSAGE".equals(field)) {
+        if (ErrorTypeRuleConstants.MATCH_FIELD_MESSAGE.equals(field)) {
             return matchesText(mode, pattern, entry.getMessage());
         }
-        if ("STACK_TRACE".equals(field)) {
+        if (ErrorTypeRuleConstants.MATCH_FIELD_STACK_TRACE.equals(field)) {
             return matchesText(mode, pattern, entry.getStackTrace());
         }
         return false;
@@ -249,10 +245,10 @@ public class ErrorTypeIdentifier {
         }
         String mode = safeUpper(rule.getMatchMode());
         String pattern = rule.getPattern().trim();
-        if ("EXACT".equals(mode)) {
+        if (ErrorTypeRuleConstants.MATCH_MODE_EXACT.equals(mode)) {
             return String.valueOf(httpStatus).equals(pattern);
         }
-        if ("RANGE".equals(mode)) {
+        if (ErrorTypeRuleConstants.MATCH_MODE_RANGE.equals(mode)) {
             String[] parts = pattern.split("-", 2);
             if (parts.length != 2) {
                 return false;
@@ -272,10 +268,10 @@ public class ErrorTypeIdentifier {
         if (value == null || value.isBlank()) {
             return false;
         }
-        if ("EXACT".equals(mode)) {
+        if (ErrorTypeRuleConstants.MATCH_MODE_EXACT.equals(mode)) {
             return value.trim().equalsIgnoreCase(pattern.trim());
         }
-        if ("REGEX".equals(mode)) {
+        if (ErrorTypeRuleConstants.MATCH_MODE_REGEX.equals(mode)) {
             return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
                     .matcher(value)
                     .find();
@@ -287,7 +283,7 @@ public class ErrorTypeIdentifier {
         if (className == null || className.isBlank()) {
             return false;
         }
-        if ("EXACT".equals(mode)) {
+        if (ErrorTypeRuleConstants.MATCH_MODE_EXACT.equals(mode)) {
             return className.equals(pattern) || shortName(className).equals(pattern);
         }
         return matchesText(mode, pattern, className);

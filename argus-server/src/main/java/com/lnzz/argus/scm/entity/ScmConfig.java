@@ -78,6 +78,18 @@ public class ScmConfig extends BaseEntity {
     /** 仓库级企微 Webhook 地址 */
     private String wechatNotifyWebhook;
 
+    /** 仓库级飞书通知开关 0=关闭 1=开启 */
+    private Integer feishuNotifyEnabled;
+
+    /** 仓库级飞书 Webhook 地址 */
+    private String feishuNotifyWebhook;
+
+    /** 仓库级钉钉通知开关 0=关闭 1=开启 */
+    private Integer dingtalkNotifyEnabled;
+
+    /** 仓库级钉钉 Webhook 地址 */
+    private String dingtalkNotifyWebhook;
+
     /** 仓库级评审配置 JSON（ReviewConfig 结构） */
     private String reviewConfig;
 

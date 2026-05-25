@@ -3,6 +3,7 @@ package com.lnzz.argus.error.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lnzz.argus.common.result.Result;
 import com.lnzz.argus.error.entity.ErrorEvent;
+import com.lnzz.argus.error.model.ErrorEventPageRequest;
 import com.lnzz.argus.error.service.ErrorManagementService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -29,9 +30,13 @@ class ErrorManagementControllerTest {
         Page<ErrorEvent> page = new Page<>(1, 10, 1);
         page.setRecords(List.of(event));
         when(service.queryEvents(1, 10, "order-service", null, "P1", null, null)).thenReturn(page);
+        ErrorEventPageRequest request = new ErrorEventPageRequest();
+        request.setPageNo(1);
+        request.setPageSize(10);
+        request.setAppName("order-service");
+        request.setSeverity("P1");
 
-        Result<Map<String, Object>> result = controller.listErrors(
-                1, 10, "order-service", null, "P1", null, null);
+        Result<Map<String, Object>> result = controller.listErrors(request);
 
         assertEquals(1L, result.getData().get("total"));
         assertEquals(1L, result.getData().get("pageNo"));

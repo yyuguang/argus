@@ -33,13 +33,15 @@ class VectorKnowledgeServiceTest {
     @Mock
     private RedisVectorStore knowledgeEntryStore;
     @Mock
+    private RedisVectorStore ruleDocumentStore;
+    @Mock
     private EmbeddingService embeddingService;
 
     private VectorKnowledgeServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new VectorKnowledgeServiceImpl(reviewIssueStore, knowledgeEntryStore, embeddingService);
+        service = new VectorKnowledgeServiceImpl(reviewIssueStore, knowledgeEntryStore, ruleDocumentStore, embeddingService);
     }
 
     // ==================== storeReviewIssue ====================

@@ -1,6 +1,7 @@
 package com.lnzz.argus.review.config;
 
 import com.alibaba.fastjson2.JSON;
+import com.lnzz.argus.common.constant.NotificationConstants;
 import lombok.Data;
 
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ public class ReviewConfig {
     private AsyncConfig async = new AsyncConfig();
     private ScoringConfig scoring = new ScoringConfig();
     private NotificationConfig notification = new NotificationConfig();
+    private RuleConfig rule = new RuleConfig();
 
     // ==================== 工厂方法 ====================
 
@@ -55,6 +57,7 @@ public class ReviewConfig {
         if (overrideParsed.async != null) merged.async = merged.async.merge(overrideParsed.async);
         if (overrideParsed.scoring != null) merged.scoring = merged.scoring.merge(overrideParsed.scoring);
         if (overrideParsed.notification != null) merged.notification = merged.notification.merge(overrideParsed.notification);
+        if (overrideParsed.rule != null) merged.rule = merged.rule.merge(overrideParsed.rule);
 
         return merged;
     }
@@ -238,6 +241,7 @@ public class ReviewConfig {
         private int minorDeduction = 3;
         private int suggestionDeduction = 0;
         private int blockThreshold = 60;
+        private BlockingRuleConfig blockingRules = new BlockingRuleConfig();
         private DimensionsConfig dimensions = new DimensionsConfig();
         private Map<String, ScoreLevelConfig> scoreLevels = new LinkedHashMap<>();
         private Map<String, SeverityDefConfig> severityDefinitions = new LinkedHashMap<>();
@@ -270,9 +274,25 @@ public class ReviewConfig {
             this.minorDeduction = o.minorDeduction;
             this.suggestionDeduction = o.suggestionDeduction;
             this.blockThreshold = o.blockThreshold;
+            if (o.blockingRules != null) this.blockingRules = this.blockingRules.merge(o.blockingRules);
             if (o.dimensions != null) this.dimensions = this.dimensions.merge(o.dimensions);
             if (o.scoreLevels != null && !o.scoreLevels.isEmpty()) this.scoreLevels = o.scoreLevels;
             if (o.severityDefinitions != null && !o.severityDefinitions.isEmpty()) this.severityDefinitions = o.severityDefinitions;
+            return this;
+        }
+    }
+
+    @Data
+    public static class BlockingRuleConfig {
+        private Boolean criticalDirectBlock = true;
+        private Integer majorBlockThreshold = null;
+        private Boolean suggestionOnlyBlockEnabled = false;
+
+        BlockingRuleConfig merge(BlockingRuleConfig o) {
+            if (o == null) return this;
+            if (o.criticalDirectBlock != null) this.criticalDirectBlock = o.criticalDirectBlock;
+            if (o.majorBlockThreshold != null || this.majorBlockThreshold != null) this.majorBlockThreshold = o.majorBlockThreshold;
+            if (o.suggestionOnlyBlockEnabled != null) this.suggestionOnlyBlockEnabled = o.suggestionOnlyBlockEnabled;
             return this;
         }
     }
@@ -338,12 +358,17 @@ public class ReviewConfig {
     public static class NotificationConfig {
         private int scoreAlertThreshold = 60;
         private List<String> scoreAlertChannels = new ArrayList<>();
+        /**
+         * 兼容旧配置：历史版本通过 notification.wechatNotifyEnabled 控制仓库级企微通知。
+         * 新版本统一使用 platforms.wechat.enabled。
+         */
         private boolean wechatNotifyEnabled = true;
+        private Map<String, NotificationPlatformConfig> platforms = defaultPlatforms();
         private Map<String, ErrorAlertRouteConfig> errorAlertRoutes = defaultErrorAlertRoutes();
         private NotificationRetryConfig retry = new NotificationRetryConfig();
 
         {
-            scoreAlertChannels.add("wechat");
+            scoreAlertChannels.add(NotificationConstants.PLATFORM_WECHAT);
         }
 
         NotificationConfig merge(NotificationConfig o) {
@@ -352,9 +377,44 @@ public class ReviewConfig {
             if (o.scoreAlertChannels != null && !o.scoreAlertChannels.isEmpty())
                 this.scoreAlertChannels = o.scoreAlertChannels;
             this.wechatNotifyEnabled = o.wechatNotifyEnabled;
+            this.platforms = mergePlatforms(this.platforms, o.platforms, o.wechatNotifyEnabled);
             this.errorAlertRoutes = mergeErrorAlertRoutes(this.errorAlertRoutes, o.errorAlertRoutes);
             this.retry = this.retry.merge(o.retry);
             return this;
+        }
+
+        private static Map<String, NotificationPlatformConfig> defaultPlatforms() {
+            Map<String, NotificationPlatformConfig> platforms = new LinkedHashMap<>();
+            platforms.put(NotificationConstants.PLATFORM_WECHAT, new NotificationPlatformConfig(true, null));
+            platforms.put(NotificationConstants.PLATFORM_FEISHU, new NotificationPlatformConfig(false, null));
+            platforms.put(NotificationConstants.PLATFORM_DINGTALK, new NotificationPlatformConfig(false, null));
+            return platforms;
+        }
+
+        private static Map<String, NotificationPlatformConfig> mergePlatforms(
+                Map<String, NotificationPlatformConfig> base,
+                Map<String, NotificationPlatformConfig> override,
+                boolean legacyWechatEnabled) {
+            Map<String, NotificationPlatformConfig> merged = new LinkedHashMap<>();
+            if (base != null) {
+                base.forEach((platform, config) -> merged.put(platform, config.copy()));
+            }
+            if (override != null) {
+                override.forEach((platform, config) -> {
+                    if (platform != null && config != null) {
+                        NotificationPlatformConfig current = merged.getOrDefault(platform, new NotificationPlatformConfig());
+                        merged.put(platform, current.merge(config));
+                    }
+                });
+            }
+            NotificationPlatformConfig wechatConfig = merged.getOrDefault(
+                    NotificationConstants.PLATFORM_WECHAT,
+                    new NotificationPlatformConfig());
+            wechatConfig.setEnabled(legacyWechatEnabled && wechatConfig.isEnabled());
+            merged.put(NotificationConstants.PLATFORM_WECHAT, wechatConfig);
+            merged.putIfAbsent(NotificationConstants.PLATFORM_FEISHU, new NotificationPlatformConfig(false, null));
+            merged.putIfAbsent(NotificationConstants.PLATFORM_DINGTALK, new NotificationPlatformConfig(false, null));
+            return merged;
         }
 
         private static Map<String, ErrorAlertRouteConfig> defaultErrorAlertRoutes() {
@@ -382,6 +442,33 @@ public class ReviewConfig {
                 });
             }
             return merged;
+        }
+    }
+
+    @Data
+    public static class NotificationPlatformConfig {
+        private boolean enabled;
+        private String webhook;
+
+        public NotificationPlatformConfig() {
+        }
+
+        public NotificationPlatformConfig(boolean enabled, String webhook) {
+            this.enabled = enabled;
+            this.webhook = webhook;
+        }
+
+        NotificationPlatformConfig merge(NotificationPlatformConfig o) {
+            if (o == null) return this;
+            this.enabled = o.enabled;
+            if (o.webhook != null) {
+                this.webhook = o.webhook;
+            }
+            return this;
+        }
+
+        NotificationPlatformConfig copy() {
+            return new NotificationPlatformConfig(enabled, webhook);
         }
     }
 
@@ -435,6 +522,51 @@ public class ReviewConfig {
                 this.timeoutSec = o.timeoutSec;
             }
             return this;
+        }
+    }
+
+    // ==================== 8. 规则管理配置 ====================
+
+    @Data
+    public static class RuleConfig {
+        private List<String> standardCategories = new ArrayList<>(List.of(
+                "CODING", "API", "DATABASE", "SECURITY", "CUSTOM"));
+        private ReviewFocusConfig reviewFocus = new ReviewFocusConfig();
+
+        RuleConfig merge(RuleConfig o) {
+            if (o == null) return this;
+            if (o.standardCategories != null && !o.standardCategories.isEmpty()) {
+                this.standardCategories = o.standardCategories;
+            }
+            if (o.reviewFocus != null) {
+                this.reviewFocus = this.reviewFocus.merge(o.reviewFocus);
+            }
+            return this;
+        }
+    }
+
+    @Data
+    public static class ReviewFocusConfig {
+        private Map<String, String> focusByLanguage = defaultFocusByLanguage();
+
+        ReviewFocusConfig merge(ReviewFocusConfig o) {
+            if (o == null) return this;
+            if (o.focusByLanguage != null && !o.focusByLanguage.isEmpty()) {
+                this.focusByLanguage = new LinkedHashMap<>(this.focusByLanguage);
+                this.focusByLanguage.putAll(o.focusByLanguage);
+            }
+            return this;
+        }
+
+        private static Map<String, String> defaultFocusByLanguage() {
+            Map<String, String> focusMap = new LinkedHashMap<>();
+            focusMap.put("default", "变更是否引入逻辑风险、配置风险、可维护性问题或发布风险");
+            focusMap.put("java", "重点检查事务边界、空指针风险、集合遍历副作用、数据库访问和并发安全");
+            focusMap.put("javascript", "重点检查状态同步、空值兼容、异步流程、类型约束和界面交互边界");
+            focusMap.put("typescript", "重点检查状态同步、空值兼容、异步流程、类型约束和界面交互边界");
+            focusMap.put("vue", "重点检查状态同步、空值兼容、异步流程、类型约束和界面交互边界");
+            focusMap.put("sql", "重点检查 where 条件、索引命中、锁风险、兼容性和数据变更安全");
+            return focusMap;
         }
     }
 }

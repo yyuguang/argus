@@ -1,6 +1,9 @@
 package com.lnzz.argus.review.parser;
 
 import com.alibaba.fastjson2.JSON;
+import com.lnzz.argus.codeindex.dto.req.SourceLocateReqDTO;
+import com.lnzz.argus.codeindex.dto.res.SourceLocateResDTO;
+import com.lnzz.argus.codeindex.service.SourceLocationService;
 import com.lnzz.argus.review.config.ReviewConfig;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
@@ -32,8 +35,13 @@ public class ContextBuilder {
     private static final int DEFAULT_MAX_RELATED_CLASSES = 5;
     private static final Pattern IMPORT_PATTERN = Pattern.compile("import\\s+([\\w.]+);");
     private static final String JAVA_SOURCE_SEGMENT = "/src/main/java/";
+    private static final Set<String> COMMON_EXTERNAL_IMPORT_PREFIXES = Set.of(
+            "java.", "javax.", "jakarta.", "org.springframework.", "org.apache.", "com.fasterxml.",
+            "com.alibaba.", "lombok.", "org.junit.", "org.mockito.", "reactor.", "io.netty."
+    );
 
     private final DiffParser diffParser;
+    private final SourceLocationService sourceLocationService;
 
     /**
      * M2-D01: 构建评审上下文列表
@@ -78,21 +86,25 @@ public class ContextBuilder {
             // M2-C01: 获取关联类内容（从 import 中提取项目内部类）
             Map<String, String> relatedClasses = new LinkedHashMap<>();
             if (fullContent != null && diff.isJavaFile()) {
-                List<String> internalImports = extractInternalImports(fullContent, basePackages);
-                for (String importClass : internalImports) {
-                    String importContent = null;
+                List<String> importClasses = extractImportCandidates(fullContent, basePackages);
+                for (String importClass : importClasses) {
+                    RelatedClassContent relatedClass = resolveRelatedClassByIndex(
+                            fileContentCache, missingFileContentCache, scmService, config, task, importClass, ref);
+                    String importContent = relatedClass != null ? relatedClass.content() : null;
                     String resolvedCacheKey = diff.getNewPath() + "::" + importClass;
-                    String resolvedPath = resolvedPathCache.get(resolvedCacheKey);
-                    if (resolvedPath != null) {
-                        importContent = readFileContentWithCache(
-                                fileContentCache, missingFileContentCache, scmService, config, task, resolvedPath, ref);
-                    } else {
-                        for (String importPath : resolveImportPaths(diff.getNewPath(), importClass, packageModuleRules, moduleSourceRoots)) {
+                    if (importContent == null && shouldUseLegacyImportFallback(importClass, basePackages)) {
+                        String resolvedPath = resolvedPathCache.get(resolvedCacheKey);
+                        if (resolvedPath != null) {
                             importContent = readFileContentWithCache(
-                                    fileContentCache, missingFileContentCache, scmService, config, task, importPath, ref);
-                            if (importContent != null) {
-                                resolvedPathCache.put(resolvedCacheKey, importPath);
-                                break;
+                                    fileContentCache, missingFileContentCache, scmService, config, task, resolvedPath, ref);
+                        } else {
+                            for (String importPath : resolveImportPaths(diff.getNewPath(), importClass, packageModuleRules, moduleSourceRoots)) {
+                                importContent = readFileContentWithCache(
+                                        fileContentCache, missingFileContentCache, scmService, config, task, importPath, ref);
+                                if (importContent != null) {
+                                    resolvedPathCache.put(resolvedCacheKey, importPath);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -133,16 +145,65 @@ public class ContextBuilder {
     /**
      * M2-C01: 从 import 语句中提取项目内部类
      */
-    private List<String> extractInternalImports(String content, List<String> basePackages) {
-        List<String> imports = new ArrayList<>();
+    private List<String> extractImportCandidates(String content, List<String> basePackages) {
+        Set<String> matchedBasePackages = new LinkedHashSet<>();
+        Set<String> otherImports = new LinkedHashSet<>();
         Matcher matcher = IMPORT_PATTERN.matcher(content);
         while (matcher.find()) {
             String importClass = matcher.group(1);
             if (matchesBasePackage(importClass, basePackages)) {
-                imports.add(importClass);
+                matchedBasePackages.add(importClass);
+            } else {
+                otherImports.add(importClass);
             }
         }
+        List<String> imports = new ArrayList<>(matchedBasePackages);
+        imports.addAll(otherImports);
         return imports;
+    }
+
+    private RelatedClassContent resolveRelatedClassByIndex(Map<String, String> fileContentCache,
+                                                           Set<String> missingFileContentCache,
+                                                           ScmPlatformService scmService,
+                                                           ScmConfig config,
+                                                           ReviewTask task,
+                                                           String importClass,
+                                                           String ref) {
+        if (sourceLocationService == null || config.getId() == null) {
+            return null;
+        }
+        try {
+            SourceLocateReqDTO request = new SourceLocateReqDTO();
+            request.setScmConfigId(config.getId());
+            request.setBranchName(firstNonBlank(task.getSourceBranch(), ref));
+            request.setCommitSha(firstNonBlank(task.getLastCommitSha(), looksLikeCommitSha(ref) ? ref : null));
+            request.setQualifiedName(importClass);
+            SourceLocateResDTO locateResult = sourceLocationService.locate(request);
+            if (locateResult == null || !Boolean.TRUE.equals(locateResult.getMatched())
+                    || locateResult.getFilePath() == null || locateResult.getFilePath().isBlank()) {
+                return null;
+            }
+
+            String relatedRef = firstNonBlank(locateResult.getCommitSha(), ref);
+            String content = readFileContentWithCache(
+                    fileContentCache, missingFileContentCache, scmService, config, task, locateResult.getFilePath(), relatedRef);
+            if (content == null) {
+                log.debug("索引命中但关联类源码拉取失败: import={}, path={}, ref={}",
+                        importClass, locateResult.getFilePath(), relatedRef);
+                return null;
+            }
+            return new RelatedClassContent(content);
+        } catch (Exception e) {
+            log.warn("通过源码索引解析关联类失败: import={}", importClass, e);
+            return null;
+        }
+    }
+
+    private boolean shouldUseLegacyImportFallback(String importClass, List<String> basePackages) {
+        if (matchesBasePackage(importClass, basePackages)) {
+            return true;
+        }
+        return COMMON_EXTERNAL_IMPORT_PREFIXES.stream().noneMatch(importClass::startsWith);
     }
 
     /**
@@ -231,6 +292,22 @@ public class ContextBuilder {
             return false;
         }
         return basePackages.stream().anyMatch(importClass::startsWith);
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private boolean looksLikeCommitSha(String value) {
+        return value != null && value.matches("[a-fA-F0-9]{7,40}");
     }
 
     private String readFileContentWithCache(Map<String, String> cache,
@@ -334,6 +411,9 @@ public class ContextBuilder {
     }
 
     private record PackageModuleRule(String packagePrefix, String sourceRoot) {
+    }
+
+    private record RelatedClassContent(String content) {
     }
 
     // ======================== Token 预算分配 ========================

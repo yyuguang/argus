@@ -25,6 +25,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -101,10 +102,10 @@ class InterfaceLogTableConfigServiceImplTest {
             datasource.setMonitorConfigId(10L);
             datasource.setPasswordSecret("secret");
             when(scmConfigService.requireById(1L)).thenReturn(scmConfig);
-            when(projectMappingMapper.selectById(2L)).thenReturn(mapping);
-            when(monitorConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(monitorConfig);
-            when(dataSourceConfigMapper.selectById(100L)).thenReturn(datasource);
-            when(configMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+            doReturn(mapping).when(projectMappingMapper).findById(2L);
+            doReturn(monitorConfig).when(monitorConfigMapper).findByScmAndMapping(1L, 2L);
+            doReturn(datasource).when(dataSourceConfigMapper).findByIdAndMappingId(2L, 100L);
+            doReturn(null).when(configMapper).findByDatasourceAndTable(100L, "api_call_log");
         }
     }
 }

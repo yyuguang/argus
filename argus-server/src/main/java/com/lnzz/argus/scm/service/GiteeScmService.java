@@ -27,7 +27,7 @@ import java.util.Map;
 public class GiteeScmService extends AbstractScmPlatformService {
 
     public GiteeScmService(ScmProperties scmProperties) {
-        super(scmProperties);
+        super(scmProperties, scmProperties == null ? null : scmProperties.getGitee());
     }
 
     @Override
@@ -117,6 +117,26 @@ public class GiteeScmService extends AbstractScmPlatformService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    @Override
+    public List<String> listRepositoryFiles(ScmConfig config, String ref) {
+        String url = apiBaseUrl(config)
+                + "/repos/{owner}/{repo}/git/trees/{ref}?recursive=1&access_token={token}";
+        ResponseEntity<String> response = doGet(url, buildHeaders(config),
+                config.getRepoOwner(), config.getRepoName(), ref, config.getAccessToken());
+        JSONArray tree = JSON.parseObject(response.getBody()).getJSONArray("tree");
+        List<String> result = new ArrayList<>();
+        if (tree == null) {
+            return result;
+        }
+        for (int i = 0; i < tree.size(); i++) {
+            JSONObject item = tree.getJSONObject(i);
+            if ("blob".equals(item.getString("type")) && item.getString("path") != null) {
+                result.add(item.getString("path"));
+            }
+        }
+        return result;
     }
 
     @Override

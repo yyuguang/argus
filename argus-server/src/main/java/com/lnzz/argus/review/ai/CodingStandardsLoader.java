@@ -11,9 +11,9 @@ import java.io.InputStream;
 import java.util.*;
 
 /**
- * 编码规范知识库加载器
+ * 历史编码规范兼容加载器
  * <p>自动扫描 classpath:standards/ 下所有规范文件（支持 .md / .docx / .xlsx / .pptx / .txt），
- * 通过 DocumentParser 统一提取为文本，拼装为 AI 评审的评分基准</p>
+ * 通过 DocumentParser 统一提取为文本，作为规则管理向量检索未命中时的兼容兜底输入。</p>
  *
  * <p>目录结构：</p>
  * <pre>

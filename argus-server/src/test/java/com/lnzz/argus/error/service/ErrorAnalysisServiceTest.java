@@ -17,6 +17,8 @@ import com.lnzz.argus.knowledge.service.KnowledgeMatcher;
 import com.lnzz.argus.knowledge.service.KnowledgeService;
 import com.lnzz.argus.knowledge.vector.VectorKnowledgeService;
 import com.lnzz.argus.notification.service.NotificationService;
+import com.lnzz.argus.scm.service.ScmConfigService;
+import com.lnzz.argus.scm.service.ScmReviewConfigSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -62,6 +64,10 @@ class ErrorAnalysisServiceTest {
     private KnowledgeMatcher knowledgeMatcher;
     @Mock
     private VectorKnowledgeService vectorKnowledgeService;
+    @Mock
+    private ScmConfigService scmConfigService;
+    @Mock
+    private ScmReviewConfigSupport scmReviewConfigSupport;
 
     private ErrorAnalysisServiceImpl service;
 
@@ -84,7 +90,9 @@ class ErrorAnalysisServiceTest {
                 knowledgeService,
                 knowledgeMatcher,
                 vectorKnowledgeService,
-                new ErrorProcessingProperties()
+                new ErrorProcessingProperties(),
+                scmConfigService,
+                scmReviewConfigSupport
         );
         ReflectionTestUtils.setField(service, "vectorEnabled", true);
         ReflectionTestUtils.setField(service, "errorSearchTopk", 5);
@@ -236,8 +244,11 @@ class ErrorAnalysisServiceTest {
         when(eventMapper.selectById(1L)).thenReturn(event);
         when(sourceCodeLocator.locate(event)).thenReturn(SourceCodeLocator.SourceLocation.notFound("未配置源码映射"));
         when(promptBuilder.buildAnalysisPrompt(org.mockito.ArgumentMatchers.eq(event),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList())).thenReturn("prompt");
-        when(analysisEngine.analyze("prompt", event)).thenReturn(analysis);
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyList(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn("prompt");
+        when(analysisEngine.analyze("prompt", event, null)).thenReturn(analysis);
 
         service.analyzeEvent(1L, "MANUAL_RETRY");
 

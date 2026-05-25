@@ -18,7 +18,7 @@ class ContextBuilderTokenTest {
 
     @BeforeEach
     void setUp() {
-        builder = new ContextBuilder(null);
+        builder = new ContextBuilder(null, null);
         tokenConfig = ReviewConfig.defaults().getToken();
     }
 

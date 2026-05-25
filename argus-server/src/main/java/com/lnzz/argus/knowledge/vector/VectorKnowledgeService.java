@@ -1,5 +1,7 @@
 package com.lnzz.argus.knowledge.vector;
 
+import com.lnzz.argus.rule.dao.entity.RuleDocument;
+import com.lnzz.argus.rule.dao.entity.RuleDocumentChunk;
 import org.springframework.ai.document.Document;
 
 import java.util.List;
@@ -66,4 +68,35 @@ public interface VectorKnowledgeService {
      */
     List<Document> findKnownFixes(String queryText, String errorType,
                                   String appName, int topK, double minScore);
+
+    // ==================== Phase 5：规则文档分块 ====================
+
+    /**
+     * 写入规则文档分块到向量库。
+     *
+     * @param document 规则文档主信息
+     * @param chunks   规则文档分块列表
+     * @return true 表示写入成功，false 表示写入失败或未执行
+     */
+    boolean storeRuleDocumentChunks(RuleDocument document, List<RuleDocumentChunk> chunks);
+
+    /**
+     * 删除指定规则文档的全部向量分块。
+     *
+     * @param documentId 规则文档 ID
+     */
+    void deleteRuleDocumentChunks(Long documentId);
+
+    /**
+     * 检索与当前评审上下文最相关的规则文档分块。
+     *
+     * @param queryText     检索文本
+     * @param categories    规则分类集合
+     * @param scmConfigId   当前仓库配置 ID
+     * @param topK          返回条数
+     * @param minSimilarity 最低相似度阈值
+     * @return 相关规则分块列表
+     */
+    List<Document> searchRuleDocumentChunks(String queryText, List<String> categories,
+                                            Long scmConfigId, int topK, double minSimilarity);
 }

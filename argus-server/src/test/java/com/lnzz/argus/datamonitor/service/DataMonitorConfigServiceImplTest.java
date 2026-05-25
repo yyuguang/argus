@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -115,11 +116,11 @@ class DataMonitorConfigServiceImplTest {
             mapping.setScmProvider("github");
             mapping.setScmProjectId(100L);
             when(scmConfigService.requireById(1L)).thenReturn(scmConfig);
-            when(projectMappingMapper.selectById(2L)).thenReturn(mapping);
-            when(dataSourceConfigMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
-            when(slowLogConfigMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
-            when(connectionPoolSnapshotMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
-            when(interfaceLogTableConfigMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
+            doReturn(mapping).when(projectMappingMapper).findById(2L);
+            doReturn(0L).when(dataSourceConfigMapper).countByMappingId(2L);
+            doReturn(false).when(slowLogConfigMapper).existsEnabledByMappingId(2L);
+            doReturn(false).when(connectionPoolSnapshotMapper).existsByMonitorConfigId(10L);
+            doReturn(0L).when(interfaceLogTableConfigMapper).countByMappingId(2L);
         }
     }
 }

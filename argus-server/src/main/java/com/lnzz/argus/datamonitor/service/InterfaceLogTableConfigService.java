@@ -21,6 +21,8 @@ public interface InterfaceLogTableConfigService {
     InterfaceLogTableConfigResponse setEnabled(Long scmConfigId, Long mappingId, Long configId,
                                                EnableRequest request);
 
+    void delete(Long scmConfigId, Long mappingId, Long configId);
+
     record InterfaceLogTableConfigRequest(
             Long datasourceId,
             String configName,

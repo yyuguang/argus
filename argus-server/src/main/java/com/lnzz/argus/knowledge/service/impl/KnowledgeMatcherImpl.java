@@ -1,8 +1,9 @@
-package com.lnzz.argus.knowledge.service;
+package com.lnzz.argus.knowledge.service.impl;
 
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
 import com.lnzz.argus.knowledge.mapper.KnowledgeEntryMapper;
+import com.lnzz.argus.knowledge.service.KnowledgeMatcher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

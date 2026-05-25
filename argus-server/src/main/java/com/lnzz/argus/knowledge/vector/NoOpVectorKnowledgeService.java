@@ -1,5 +1,7 @@
 package com.lnzz.argus.knowledge.vector;
 
+import com.lnzz.argus.rule.dao.entity.RuleDocument;
+import com.lnzz.argus.rule.dao.entity.RuleDocumentChunk;
 import org.springframework.ai.document.Document;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -45,6 +47,21 @@ public class NoOpVectorKnowledgeService implements VectorKnowledgeService {
     @Override
     public List<Document> findKnownFixes(String queryText, String errorType,
                                          String appName, int topK, double minScore) {
+        return List.of();
+    }
+
+    @Override
+    public boolean storeRuleDocumentChunks(RuleDocument document, List<RuleDocumentChunk> chunks) {
+        return false;
+    }
+
+    @Override
+    public void deleteRuleDocumentChunks(Long documentId) {
+    }
+
+    @Override
+    public List<Document> searchRuleDocumentChunks(String queryText, List<String> categories,
+                                                   Long scmConfigId, int topK, double minSimilarity) {
         return List.of();
     }
 }

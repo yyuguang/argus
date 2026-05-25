@@ -1,10 +1,14 @@
 package com.lnzz.argus.scm.controller;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.lnzz.argus.common.result.PageResult;
 import com.lnzz.argus.common.result.Result;
 import com.lnzz.argus.scm.entity.ScmConfig;
+import com.lnzz.argus.scm.model.ScmConfigPageRequest;
+import com.lnzz.argus.scm.model.ScmConfigRequest;
+import com.lnzz.argus.scm.model.ScmConfigView;
 import com.lnzz.argus.scm.service.ScmConfigService;
-import jakarta.validation.constraints.NotBlank;
-import lombok.Data;
+import com.lnzz.argus.scm.service.ScmReviewConfigSupport;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -24,6 +28,29 @@ import java.util.List;
 public class ScmConfigController {
 
     private final ScmConfigService scmConfigService;
+    private final ScmReviewConfigSupport scmReviewConfigSupport;
+
+    /**
+     * 分页查询 SCM 配置。
+     *
+     * @param request SCM 配置分页查询请求
+     * @return SCM 配置分页结果
+     */
+    @PostMapping("/page")
+    public Result<PageResult<ScmConfigView>> pageConfigs(@RequestBody(required = false) ScmConfigPageRequest request) {
+        ScmConfigPageRequest safeRequest = request == null ? new ScmConfigPageRequest() : request;
+        Page<ScmConfig> page = scmConfigService.pageConfigs(
+                safeRequest.normalizedPageNo(),
+                safeRequest.normalizedPageSize(),
+                safeRequest.getScmProvider(),
+                safeRequest.getEnabled(),
+                safeRequest.getKeyword());
+        return Result.success(PageResult.of(
+                page.getRecords().stream().map(this::toView).toList(),
+                page.getCurrent(),
+                page.getSize(),
+                page.getTotal()));
+    }
 
     @GetMapping
     public Result<List<ScmConfigView>> listConfigs() {
@@ -70,6 +97,10 @@ public class ScmConfigController {
         config.setDescription(request.getDescription());
         config.setWechatNotifyEnabled(request.getWechatNotifyEnabled());
         config.setWechatNotifyWebhook(request.getWechatNotifyWebhook());
+        config.setFeishuNotifyEnabled(request.getFeishuNotifyEnabled());
+        config.setFeishuNotifyWebhook(request.getFeishuNotifyWebhook());
+        config.setDingtalkNotifyEnabled(request.getDingtalkNotifyEnabled());
+        config.setDingtalkNotifyWebhook(request.getDingtalkNotifyWebhook());
         config.setReviewConfig(request.getReviewConfig());
         return config;
     }
@@ -96,57 +127,12 @@ public class ScmConfigController {
                 config.getDescription(),
                 config.getWechatNotifyEnabled(),
                 scmConfigService.maskSecret(config.getWechatNotifyWebhook()),
-                config.getReviewConfig()
+                config.getFeishuNotifyEnabled(),
+                scmConfigService.maskSecret(config.getFeishuNotifyWebhook()),
+                config.getDingtalkNotifyEnabled(),
+                scmConfigService.maskSecret(config.getDingtalkNotifyWebhook()),
+                scmReviewConfigSupport.maskReviewConfigSecrets(config)
         );
     }
 
-    @Data
-    public static class ScmConfigRequest {
-        @NotBlank
-        private String scmProvider;
-        private Long projectId;
-        private String projectName;
-        private String repoOwner;
-        private String repoName;
-        private String apiBaseUrl;
-        private String webBaseUrl;
-        private String accessToken;
-        private String webhookSecret;
-        private String basePackages;
-        private String moduleSourceRoots;
-        private String packageModuleMappings;
-        private Integer maxRelatedClasses;
-        private Integer maxContextTokens;
-        private Integer reviewParallelism;
-        private Boolean enabled;
-        private String description;
-        private Integer wechatNotifyEnabled;
-        private String wechatNotifyWebhook;
-        private String reviewConfig;
-    }
-
-    public record ScmConfigView(
-            Long id,
-            String scmProvider,
-            Long projectId,
-            String projectName,
-            String repoOwner,
-            String repoName,
-            String apiBaseUrl,
-            String webBaseUrl,
-            String accessToken,
-            String webhookSecret,
-            String basePackages,
-            String moduleSourceRoots,
-            String packageModuleMappings,
-            Integer maxRelatedClasses,
-            Integer maxContextTokens,
-            Integer reviewParallelism,
-            Boolean enabled,
-            String description,
-            Integer wechatNotifyEnabled,
-            String wechatNotifyWebhook,
-            String reviewConfig
-    ) {
-    }
 }

@@ -39,10 +39,11 @@ class ScoreCalculatorTest {
         // final = 82×0.6 + 60×0.4 = 49.2+24 = 73.2 → 73
         assertEquals(73, score.getTotalScore());
         assertEquals("B", score.getScoreLevel());
-        assertTrue(score.isPassed()); // 73 >= 60
+        assertFalse(score.isPassed()); // CRITICAL 默认直接阻断
         assertEquals(1, score.getCriticalCount());
         assertEquals(2, score.getMajorCount());
         assertEquals(0, score.getMinorCount());
+        assertTrue(score.getDecisionReasons().contains("存在 1 个 CRITICAL 问题，触发直接阻断"));
     }
 
     @Test
@@ -99,6 +100,7 @@ class ScoreCalculatorTest {
         ReviewConfig config = ReviewConfig.defaults();
         config.getScoring().setAiWeight(0.8);
         config.getScoring().setRuleWeight(0.2);
+        config.getScoring().getBlockingRules().setCriticalDirectBlock(false);
 
         AiReviewEngine.ReviewResult result = buildResult(80, List.of(
                 issue("CRITICAL", "COMPLIANCE")
@@ -170,6 +172,59 @@ class ScoreCalculatorTest {
     }
 
     @Test
+    @DisplayName("关闭 CRITICAL 直接阻断后，仅按总分阈值判定")
+    void criticalDirectBlockCanBeDisabled() {
+        ReviewConfig config = ReviewConfig.defaults();
+        config.getScoring().getBlockingRules().setCriticalDirectBlock(false);
+
+        AiReviewEngine.ReviewResult result = buildResult(95, List.of(issue("CRITICAL", "SECURITY")));
+
+        ScoreCalculator.ScoreResult score = calculator.calculateScore(result, config);
+
+        assertEquals(89, score.getTotalScore());
+        assertTrue(score.isPassed());
+    }
+
+    @Test
+    @DisplayName("MAJOR 数量达到阈值时直接阻断")
+    void majorThresholdCanBlock() {
+        ReviewConfig config = ReviewConfig.defaults();
+        config.getScoring().getBlockingRules().setMajorBlockThreshold(2);
+
+        AiReviewEngine.ReviewResult result = buildResult(96, List.of(
+                issue("MAJOR", "CORRECTNESS"),
+                issue("MAJOR", "PERFORMANCE")
+        ));
+
+        ScoreCalculator.ScoreResult score = calculator.calculateScore(result, config);
+
+        assertEquals(90, score.getTotalScore());
+        assertFalse(score.isPassed());
+        assertTrue(score.getDecisionReasons().contains("MAJOR 问题 2 个，达到阻断阈值 2"));
+    }
+
+    @Test
+    @DisplayName("仅建议项在关闭阻断时不会因为阈值失败")
+    void suggestionsOnlyCanBypassThreshold() {
+        ReviewConfig config = ReviewConfig.defaults();
+        config.getScoring().getBlockingRules().setSuggestionOnlyBlockEnabled(false);
+        config.getScoring().getSeverityDefinitions().get("SUGGESTION").setDeduction(30);
+        config.getScoring().setBlockThreshold(90);
+
+        AiReviewEngine.ReviewResult result = buildResult(80, List.of(
+                issue("SUGGESTION", "MAINTAINABILITY"),
+                issue("SUGGESTION", "MAINTAINABILITY")
+        ));
+
+        ScoreCalculator.ScoreResult score = calculator.calculateScore(result, config);
+
+        assertEquals(64, score.getTotalScore());
+        assertTrue(score.isPassed());
+        assertEquals(2, score.getSuggestionCount());
+        assertTrue(score.getDecisionReasons().contains("当前仅存在建议项问题，未触发阻断规则"));
+    }
+
+    @Test
     @DisplayName("null issues → 无扣分")
     void nullIssuesHandled() {
         AiReviewEngine.ReviewResult result = buildResult(90, null);
@@ -199,8 +254,8 @@ class ScoreCalculatorTest {
     @Test
     @DisplayName("mergeScores 多文件取平均 + 汇总 Issue")
     void mergeScoresAveragesAndAggregates() {
-        ScoreCalculator.ScoreResult s1 = makeScoreResult(80, 90, 70, 85, 75, 1, 2, 0);
-        ScoreCalculator.ScoreResult s2 = makeScoreResult(90, 80, 80, 75, 85, 0, 1, 3);
+        ScoreCalculator.ScoreResult s1 = makeScoreResult(80, 90, 70, 85, 75, 1, 2, 0, 0);
+        ScoreCalculator.ScoreResult s2 = makeScoreResult(90, 80, 80, 75, 85, 0, 1, 3, 1);
 
         ScoreCalculator.ScoreResult merged = calculator.mergeScores(List.of(s1, s2), defaultConfig);
 
@@ -214,6 +269,7 @@ class ScoreCalculatorTest {
         assertEquals(1, merged.getCriticalCount());
         assertEquals(3, merged.getMajorCount());
         assertEquals(3, merged.getMinorCount());
+        assertEquals(1, merged.getSuggestionCount());
         // merge 走 100 规则基分
         assertTrue(merged.getTotalScore() > 0);
     }
@@ -258,7 +314,7 @@ class ScoreCalculatorTest {
 
     private ScoreCalculator.ScoreResult makeScoreResult(int comp, int corr, int dataS,
                                                          int perf, int maint,
-                                                         int crit, int major, int minor) {
+                                                         int crit, int major, int minor, int suggestion) {
         ScoreCalculator.ScoreResult s = new ScoreCalculator.ScoreResult();
         s.setComplianceScore(comp);
         s.setCorrectnessScore(corr);
@@ -268,6 +324,7 @@ class ScoreCalculatorTest {
         s.setCriticalCount(crit);
         s.setMajorCount(major);
         s.setMinorCount(minor);
+        s.setSuggestionCount(suggestion);
         return s;
     }
 }

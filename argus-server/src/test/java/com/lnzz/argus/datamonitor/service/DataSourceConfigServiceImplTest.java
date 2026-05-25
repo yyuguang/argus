@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,7 +45,7 @@ class DataSourceConfigServiceImplTest {
     @DisplayName("创建数据源时绑定监控配置并加密密码")
     void createBindsMonitorConfigAndEncryptsPassword() {
         Fixture fixture = new Fixture();
-        when(fixture.dataSourceMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        doReturn(null).when(fixture.dataSourceMapper).findByCode(2L, "oms_master");
 
         DataSourceConfigResponse response = fixture.service.create(1L, 2L, request(true));
 
@@ -77,7 +78,7 @@ class DataSourceConfigServiceImplTest {
         Fixture fixture = new Fixture();
         DataSourceConfig existing = new DataSourceConfig();
         existing.setId(99L);
-        when(fixture.dataSourceMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(existing);
+        doReturn(existing).when(fixture.dataSourceMapper).findByCode(2L, "oms_master");
 
         BizException exception = assertThrows(BizException.class,
                 () -> fixture.service.create(1L, 2L, request(true)));
@@ -90,7 +91,7 @@ class DataSourceConfigServiceImplTest {
     void setEnabledUpdatesDatasourceState() {
         Fixture fixture = new Fixture();
         DataSourceConfig datasource = datasource();
-        when(fixture.dataSourceMapper.selectById(100L)).thenReturn(datasource);
+        doReturn(datasource).when(fixture.dataSourceMapper).findByIdAndMappingId(2L, 100L);
 
         DataSourceConfigResponse response = fixture.service.setEnabled(1L, 2L, 100L, new EnableRequest(false));
 
@@ -122,7 +123,7 @@ class DataSourceConfigServiceImplTest {
         datasource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/oms");
         datasource.setUsername("argus_readonly");
         datasource.setPasswordSecret(fixture.secretCodec.encrypt("readonly_pwd"));
-        when(fixture.dataSourceMapper.selectById(100L)).thenReturn(datasource);
+        doReturn(datasource).when(fixture.dataSourceMapper).findByIdAndMappingId(2L, 100L);
         DataSourceTestResult testResult = new DataSourceTestResult(true, true, true, true,
                 true, "5.7.44", "只读监控权限验证通过");
         when(fixture.connectivityTester.test(any(DataSourceConnectionRequest.class))).thenReturn(testResult);
@@ -147,7 +148,7 @@ class DataSourceConfigServiceImplTest {
         datasource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/oms");
         datasource.setUsername("argus_readonly");
         datasource.setPasswordSecret("AES_GCM:broken");
-        when(fixture.dataSourceMapper.selectById(100L)).thenReturn(datasource);
+        doReturn(datasource).when(fixture.dataSourceMapper).findByIdAndMappingId(2L, 100L);
 
         BizException exception = assertThrows(BizException.class,
                 () -> fixture.service.testExisting(1L, 2L, 100L,
@@ -216,9 +217,9 @@ class DataSourceConfigServiceImplTest {
             monitorConfig.setScmConfigId(1L);
             monitorConfig.setProjectMappingId(2L);
             when(scmConfigService.requireById(1L)).thenReturn(scmConfig);
-            when(projectMappingMapper.selectById(2L)).thenReturn(mapping);
-            when(monitorConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(monitorConfig);
-            when(dataSourceMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+            doReturn(mapping).when(projectMappingMapper).findById(2L);
+            doReturn(monitorConfig).when(monitorConfigMapper).findByScmAndMapping(1L, 2L);
+            doReturn(List.of()).when(dataSourceMapper).findByMappingId(2L);
             when(dataSourceMapper.insert(any(DataSourceConfig.class))).thenAnswer(invocation -> {
                 insertedConfig = invocation.getArgument(0);
                 insertedConfig.setId(100L);

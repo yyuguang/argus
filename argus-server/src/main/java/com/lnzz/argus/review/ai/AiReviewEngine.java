@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
+import com.lnzz.argus.rule.service.RulePromptService;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -25,17 +26,22 @@ import java.util.List;
 @Component
 public class AiReviewEngine {
 
-    private static final int MAX_REPAIR_RESPONSE_CHARS = 16_000;
-
     private final ChatClient chatClient;
+    private final RulePromptService rulePromptService;
 
     @Autowired
-    public AiReviewEngine(ChatClient.Builder chatClientBuilder) {
+    public AiReviewEngine(ChatClient.Builder chatClientBuilder, RulePromptService rulePromptService) {
         this.chatClient = chatClientBuilder.build();
+        this.rulePromptService = rulePromptService;
     }
 
     AiReviewEngine(ChatClient chatClient) {
+        this(chatClient, null);
+    }
+
+    AiReviewEngine(ChatClient chatClient, RulePromptService rulePromptService) {
         this.chatClient = chatClient;
+        this.rulePromptService = rulePromptService;
     }
 
     /**
@@ -45,6 +51,17 @@ public class AiReviewEngine {
      * @return 结构化评审结果
      */
     public ReviewResult executeReview(String prompt) {
+        return executeReview(prompt, null);
+    }
+
+    /**
+     * M3-C01: 调用 AI 执行评审。
+     *
+     * @param prompt 完整评审 Prompt
+     * @param scmConfigId SCM 仓库配置 ID，可为空
+     * @return 结构化评审结果
+     */
+    public ReviewResult executeReview(String prompt, Long scmConfigId) {
         log.info("调用AI评审, promptLength={}", prompt.length());
         long startTime = System.currentTimeMillis();
 
@@ -72,7 +89,7 @@ public class AiReviewEngine {
                 throw parseException;
             }
             log.warn("AI响应非结构化，尝试进行一次 JSON 修复后重试解析: {}", parseException.getMessage());
-            return repairAndParseResponse(prompt, response, duration, parseException);
+            return repairAndParseResponse(prompt, response, duration, parseException, scmConfigId);
         }
     }
 
@@ -135,12 +152,13 @@ public class AiReviewEngine {
     private ReviewResult repairAndParseResponse(String originalPrompt,
                                                 String originalResponse,
                                                 long originalDuration,
-                                                BizException originalParseException) {
+                                                BizException originalParseException,
+                                                Long scmConfigId) {
         String repairedResponse;
         long repairStart = System.currentTimeMillis();
         try {
             repairedResponse = chatClient.prompt()
-                    .user(buildRepairPrompt(originalResponse))
+                    .user(buildRepairPrompt(originalResponse, scmConfigId))
                     .call()
                     .content();
         } catch (Exception e) {
@@ -166,36 +184,11 @@ public class AiReviewEngine {
         }
     }
 
-    private String buildRepairPrompt(String originalResponse) {
-        String compactResponse = originalResponse == null ? "" : originalResponse.trim();
-        if (compactResponse.length() > MAX_REPAIR_RESPONSE_CHARS) {
-            compactResponse = compactResponse.substring(0, MAX_REPAIR_RESPONSE_CHARS);
+    private String buildRepairPrompt(String originalResponse, Long scmConfigId) {
+        if (rulePromptService == null) {
+            throw new BizException(ResultCode.AI_PARSE_ERROR, "未配置代码评审 JSON 修复 Prompt 服务");
         }
-        return """
-                你需要把下面这段代码评审回复转换为严格 JSON。
-
-                只允许输出一个 JSON 对象，首字符必须是 `{`，末字符必须是 `}`。
-                不允许输出 Markdown、解释、寒暄、代码块标记或任何 JSON 外文本。
-
-                JSON schema:
-                {
-                  "scores": {
-                    "compliance": 100,
-                    "correctness": 100,
-                    "dataSafety": 100,
-                    "performance": 100,
-                    "maintainability": 100
-                  },
-                  "issues": [],
-                  "highlights": [],
-                  "summary": ""
-                }
-
-                如果原回复没有明确问题，请返回空 issues，并在 summary 说明原回复未提供结构化问题。
-
-                原回复：
-                %s
-                """.formatted(compactResponse);
+        return rulePromptService.buildReviewJsonRepairPrompt(originalResponse, scmConfigId);
     }
 
     /**

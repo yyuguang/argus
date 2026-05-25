@@ -1,6 +1,11 @@
 package com.lnzz.argus.review.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.lnzz.argus.codeindex.dto.req.CodeIndexScanReqDTO;
+import com.lnzz.argus.codeindex.dto.res.CodeIndexSummaryResDTO;
+import com.lnzz.argus.codeindex.service.CodeIndexScanService;
+import com.lnzz.argus.codeindex.service.CodeIndexService;
+import com.lnzz.argus.codeindex.support.CodeIndexConstants;
 import com.lnzz.argus.notification.service.NotificationService;
 import com.lnzz.argus.knowledge.vector.VectorKnowledgeService;
 import com.lnzz.argus.review.ai.AiReviewEngine;
@@ -74,6 +79,10 @@ class ReviewExecutorAsyncTest {
     private ReviewerProfileService reviewerProfileService;
     @Mock
     private VectorKnowledgeService vectorKnowledgeService;
+    @Mock
+    private CodeIndexService codeIndexService;
+    @Mock
+    private CodeIndexScanService codeIndexScanService;
 
     private final ExecutorService reviewFileExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService reviewExecutorPool = Executors.newSingleThreadExecutor();
@@ -102,8 +111,8 @@ class ReviewExecutorAsyncTest {
         doNothing().when(contextBuilder).trimToBudget(anyList(), any());
         when(diffParser.calculateStats(anyList())).thenReturn(new DiffParser.DiffStats(1, 12, 4));
         when(codingStandardsLoader.loadCodingStandards()).thenReturn("rules");
-        when(promptBuilder.buildReviewPrompt(any(), anyString(), any())).thenReturn("prompt");
-        when(aiReviewEngine.executeReview("prompt")).thenReturn(createReviewResult());
+        when(promptBuilder.buildReviewPrompt(any(), anyString(), any(), any())).thenReturn("prompt");
+        when(aiReviewEngine.executeReview("prompt", 99L)).thenReturn(createReviewResult());
         when(scoreCalculator.calculateScore(any(), any())).thenReturn(createFileScore());
         when(scoreCalculator.mergeScores(anyList(), any())).thenAnswer(invocation -> {
             Thread.sleep(1500L);
@@ -145,8 +154,8 @@ class ReviewExecutorAsyncTest {
         doNothing().when(contextBuilder).trimToBudget(anyList(), any());
         when(diffParser.calculateStats(anyList())).thenReturn(new DiffParser.DiffStats(1, 12, 4));
         when(codingStandardsLoader.loadCodingStandards()).thenReturn("rules");
-        when(promptBuilder.buildReviewPrompt(any(), anyString(), any())).thenReturn("prompt");
-        when(aiReviewEngine.executeReview("prompt")).thenReturn(createReviewResult());
+        when(promptBuilder.buildReviewPrompt(any(), anyString(), any(), any())).thenReturn("prompt");
+        when(aiReviewEngine.executeReview("prompt", 99L)).thenReturn(createReviewResult());
         when(scoreCalculator.calculateScore(any(), any())).thenReturn(createFileScore());
         when(scoreCalculator.mergeScores(anyList(), any()))
                 .thenThrow(new IllegalStateException("mock score failure"));
@@ -181,8 +190,8 @@ class ReviewExecutorAsyncTest {
         doNothing().when(contextBuilder).trimToBudget(anyList(), any());
         when(diffParser.calculateStats(anyList())).thenReturn(new DiffParser.DiffStats(1, 12, 4));
         when(codingStandardsLoader.loadCodingStandards()).thenReturn("rules");
-        when(promptBuilder.buildReviewPrompt(any(), anyString(), any())).thenReturn("prompt");
-        when(aiReviewEngine.executeReview("prompt")).thenReturn(createReviewResult());
+        when(promptBuilder.buildReviewPrompt(any(), anyString(), any(), any())).thenReturn("prompt");
+        when(aiReviewEngine.executeReview("prompt", 99L)).thenReturn(createReviewResult());
         when(scoreCalculator.calculateScore(any(), any())).thenReturn(createFileScore());
         when(scoreCalculator.mergeScores(anyList(), any())).thenReturn(createFinalScore());
         when(scmService.addPullRequestComment(any(), any(), anyString())).thenReturn(1L, 2L, 3L);
@@ -190,6 +199,76 @@ class ReviewExecutorAsyncTest {
         executor.executeReview(1L);
 
         verify(notificationService, after(1500).never()).sendReviewNotification(any(), any(), any(), any());
+        verify(scmService, timeout(2000)).setPullRequestLabels(any(), any(), anyList());
+    }
+
+    @Test
+    @DisplayName("当前 commit 已有源码索引时跳过重复扫描")
+    void existingCodeIndexSkipsScan() {
+        ReviewExecutor executor = newExecutor();
+        ReviewTask task = createTask();
+        task.setLastCommitSha("abc1234");
+        ScmConfig scmConfig = createScmConfig(withAsyncConfig(5, 0, 1, false));
+
+        when(reviewTaskMapper.selectById(1L)).thenReturn(task);
+        when(scmConfigService.requireById(99L)).thenReturn(scmConfig);
+        when(scmPlatformServiceFactory.getRequired("github")).thenReturn(scmService);
+        when(scmService.getPullRequestDiffs(any(), any())).thenReturn(List.of(createDiff()));
+        when(codeIndexService.getSuccessfulIndexByCommit(99L, "abc1234"))
+                .thenReturn(indexSummary(10L, "abc1234", CodeIndexConstants.ScanStatus.SUCCESS));
+        when(contextBuilder.buildReviewContexts(any(), any(), any(), anyList(), anyString()))
+                .thenReturn(List.of(createContext()));
+        doNothing().when(contextBuilder).trimToBudget(anyList(), any());
+        when(diffParser.calculateStats(anyList())).thenReturn(new DiffParser.DiffStats(1, 12, 4));
+        when(codingStandardsLoader.loadCodingStandards()).thenReturn("rules");
+        when(promptBuilder.buildReviewPrompt(any(), anyString(), any(), any())).thenReturn("prompt");
+        when(aiReviewEngine.executeReview("prompt", 99L)).thenReturn(createReviewResult());
+        when(scoreCalculator.calculateScore(any(), any())).thenReturn(createFileScore());
+        when(scoreCalculator.mergeScores(anyList(), any())).thenReturn(createFinalScore());
+        when(scmService.addPullRequestComment(any(), any(), anyString())).thenReturn(1L, 2L);
+
+        executor.executeReview(1L);
+
+        verify(codeIndexScanService, never()).scanIncremental(any(), any(), anyList());
+        verify(contextBuilder).buildReviewContexts(any(), any(), any(), anyList(), eq("abc1234"));
+        verify(scmService, timeout(2000)).setPullRequestLabels(any(), any(), anyList());
+    }
+
+    @Test
+    @DisplayName("源码索引构建失败不阻断 Review 主流程")
+    void codeIndexFailureDoesNotBlockReview() {
+        ReviewExecutor executor = newExecutor();
+        ReviewTask task = createTask();
+        task.setLastCommitSha("def5678");
+        ScmConfig scmConfig = createScmConfig(withAsyncConfig(5, 0, 1, false));
+
+        when(reviewTaskMapper.selectById(1L)).thenReturn(task);
+        when(scmConfigService.requireById(99L)).thenReturn(scmConfig);
+        when(scmPlatformServiceFactory.getRequired("github")).thenReturn(scmService);
+        when(scmService.getPullRequestDiffs(any(), any())).thenReturn(List.of(createDiff()));
+        when(codeIndexService.getSuccessfulIndexByCommit(99L, "def5678")).thenReturn(null);
+        when(codeIndexScanService.scanIncremental(eq(scmConfig), any(CodeIndexScanReqDTO.class), anyList()))
+                .thenThrow(new IllegalStateException("scan boom"));
+        when(contextBuilder.buildReviewContexts(any(), any(), any(), anyList(), anyString()))
+                .thenReturn(List.of(createContext()));
+        doNothing().when(contextBuilder).trimToBudget(anyList(), any());
+        when(diffParser.calculateStats(anyList())).thenReturn(new DiffParser.DiffStats(1, 12, 4));
+        when(codingStandardsLoader.loadCodingStandards()).thenReturn("rules");
+        when(promptBuilder.buildReviewPrompt(any(), anyString(), any(), any())).thenReturn("prompt");
+        when(aiReviewEngine.executeReview("prompt", 99L)).thenReturn(createReviewResult());
+        when(scoreCalculator.calculateScore(any(), any())).thenReturn(createFileScore());
+        when(scoreCalculator.mergeScores(anyList(), any())).thenReturn(createFinalScore());
+        when(scmService.addPullRequestComment(any(), any(), anyString())).thenReturn(1L, 2L);
+
+        executor.executeReview(1L);
+
+        ArgumentCaptor<CodeIndexScanReqDTO> scanCaptor = ArgumentCaptor.forClass(CodeIndexScanReqDTO.class);
+        verify(codeIndexScanService).scanIncremental(eq(scmConfig), scanCaptor.capture(), anyList());
+        assertEquals("feature/async-score", scanCaptor.getValue().getBranchName());
+        assertEquals("def5678", scanCaptor.getValue().getCommitSha());
+        assertEquals(CodeIndexConstants.ScanType.INCREMENTAL, scanCaptor.getValue().getScanType());
+        verify(contextBuilder).buildReviewContexts(any(), any(), any(), anyList(), eq("def5678"));
+        verify(aiReviewEngine).executeReview("prompt", 99L);
         verify(scmService, timeout(2000)).setPullRequestLabels(any(), any(), anyList());
     }
 
@@ -209,6 +288,8 @@ class ReviewExecutorAsyncTest {
                 reportFormatter,
                 notificationService,
                 vectorKnowledgeService,
+                codeIndexService,
+                codeIndexScanService,
                 reviewFileExecutor,
                 reviewExecutorPool
         );
@@ -307,5 +388,15 @@ class ReviewExecutorAsyncTest {
         score.setMinorCount(0);
         score.setPassed(true);
         return score;
+    }
+
+    private CodeIndexSummaryResDTO indexSummary(Long indexId, String commitSha, String scanStatus) {
+        CodeIndexSummaryResDTO summary = new CodeIndexSummaryResDTO();
+        summary.setIndexId(indexId);
+        summary.setScmConfigId(99L);
+        summary.setBranchName("feature/async-score");
+        summary.setCommitSha(commitSha);
+        summary.setScanStatus(scanStatus);
+        return summary;
     }
 }

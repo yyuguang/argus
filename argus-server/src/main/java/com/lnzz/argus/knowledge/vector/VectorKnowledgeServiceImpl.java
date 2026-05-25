@@ -2,6 +2,8 @@ package com.lnzz.argus.knowledge.vector;
 
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
 import com.lnzz.argus.review.entity.ReviewIssue;
+import com.lnzz.argus.rule.dao.entity.RuleDocument;
+import com.lnzz.argus.rule.dao.entity.RuleDocumentChunk;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -31,15 +33,18 @@ public class VectorKnowledgeServiceImpl implements VectorKnowledgeService {
 
     private final RedisVectorStore reviewIssueStore;
     private final RedisVectorStore knowledgeEntryStore;
+    private final RedisVectorStore ruleDocumentStore;
     private final EmbeddingService embeddingService;
     private final ExecutorService asyncExecutor;
 
     public VectorKnowledgeServiceImpl(
             @Qualifier("reviewIssueVectorStore") RedisVectorStore reviewIssueStore,
             @Qualifier("knowledgeEntryVectorStore") RedisVectorStore knowledgeEntryStore,
+            @Qualifier("ruleDocumentVectorStore") RedisVectorStore ruleDocumentStore,
             EmbeddingService embeddingService) {
         this.reviewIssueStore = reviewIssueStore;
         this.knowledgeEntryStore = knowledgeEntryStore;
+        this.ruleDocumentStore = ruleDocumentStore;
         this.embeddingService = embeddingService;
         this.asyncExecutor = Executors.newFixedThreadPool(2, r -> {
             Thread t = new Thread(r, "argus-vectorkb");
@@ -200,6 +205,67 @@ public class VectorKnowledgeServiceImpl implements VectorKnowledgeService {
         }
     }
 
+    // ==================== Phase 5：规则文档分块 ====================
+
+    @Override
+    public boolean storeRuleDocumentChunks(RuleDocument document, List<RuleDocumentChunk> chunks) {
+        if (document == null || document.getId() == null) {
+            return false;
+        }
+        try {
+            deleteRuleDocumentChunks(document.getId());
+            if (chunks == null || chunks.isEmpty()) {
+                log.info("规则文档分块向量写入跳过, documentId={}, reason=无有效分块", document.getId());
+                return true;
+            }
+            List<Document> documents = chunks.stream()
+                    .map(chunk -> buildRuleChunkDocument(document, chunk))
+                    .toList();
+            ruleDocumentStore.add(documents);
+            log.info("规则文档分块已写入向量库, documentId={}, chunkCount={}", document.getId(), documents.size());
+            return true;
+        } catch (Exception ex) {
+            log.warn("规则文档分块向量写入失败, documentId={}, error={}", document.getId(), ex.getMessage(), ex);
+            return false;
+        }
+    }
+
+    @Override
+    public void deleteRuleDocumentChunks(Long documentId) {
+        if (documentId == null) {
+            return;
+        }
+        try {
+            Filter.Expression filter = new Filter.Expression(
+                    Filter.ExpressionType.EQ,
+                    new Filter.Key("document_id"),
+                    new Filter.Value(String.valueOf(documentId)));
+            ruleDocumentStore.delete(filter);
+            log.info("规则文档分块向量删除完成, documentId={}", documentId);
+        } catch (Exception ex) {
+            log.warn("规则文档分块向量删除失败, documentId={}, error={}", documentId, ex.getMessage(), ex);
+        }
+    }
+
+    @Override
+    public List<Document> searchRuleDocumentChunks(String queryText, List<String> categories,
+                                                   Long scmConfigId, int topK, double minSimilarity) {
+        try {
+            SearchRequest.Builder builder = SearchRequest.builder()
+                    .query(queryText)
+                    .topK(topK)
+                    .similarityThreshold(minSimilarity);
+            Filter.Expression filter = buildRuleDocumentFilter(categories, scmConfigId);
+            if (filter != null) {
+                builder.filterExpression(filter);
+            }
+            return ruleDocumentStore.doSimilaritySearch(builder.build());
+        } catch (Exception ex) {
+            log.warn("规则文档向量检索失败，降级返回空列表: {}", ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
     // ======================== 内部 ========================
 
     /** 构建评审 Issue 的 TAG 过滤表达式：author_id 和 project_name 可选 AND */
@@ -249,6 +315,79 @@ public class VectorKnowledgeServiceImpl implements VectorKnowledgeService {
         if (entry.getRootCause() != null) sb.append(' ').append(entry.getRootCause());
         if (entry.getFixSuggestion() != null) sb.append(' ').append(entry.getFixSuggestion());
         return sb.toString().trim();
+    }
+
+    private Document buildRuleChunkDocument(RuleDocument document, RuleDocumentChunk chunk) {
+        Map<String, Object> meta = new java.util.HashMap<>();
+        putIfNotNull(meta, "document_id", document.getId().toString());
+        putIfNotNull(meta, "category", document.getCategory());
+        putIfNotNull(meta, "scope", document.getScope());
+        putIfNotNull(meta, "scm_config_id",
+                document.getScmConfigId() == null ? null : document.getScmConfigId().toString());
+        putIfNotNull(meta, "status", document.getStatus());
+        putIfNotNull(meta, "version_no",
+                document.getVersionNo() == null ? null : document.getVersionNo().toString());
+        putIfNotNull(meta, "chunk_no",
+                chunk.getChunkNo() == null ? null : chunk.getChunkNo().toString());
+        putIfNotNull(meta, "title", chunk.getTitle());
+        return Document.builder()
+                .id("rule:document:chunk:" + document.getId() + ":" + chunk.getChunkNo())
+                .text(buildRuleChunkEmbeddingText(document, chunk))
+                .metadata(meta)
+                .build();
+    }
+
+    private String buildRuleChunkEmbeddingText(RuleDocument document, RuleDocumentChunk chunk) {
+        StringBuilder sb = new StringBuilder();
+        if (document.getCategory() != null) {
+            sb.append('[').append(document.getCategory()).append(']');
+        }
+        if (document.getScope() != null) {
+            sb.append('[').append(document.getScope()).append(']');
+        }
+        if (document.getDocumentName() != null) {
+            sb.append(' ').append(document.getDocumentName());
+        }
+        if (chunk.getTitle() != null) {
+            sb.append(' ').append(chunk.getTitle());
+        }
+        if (chunk.getContentText() != null) {
+            sb.append(' ').append(chunk.getContentText());
+        }
+        return sb.toString().trim();
+    }
+
+    private Filter.Expression buildRuleDocumentFilter(List<String> categories, Long scmConfigId) {
+        Filter.Expression activeFilter = new Filter.Expression(
+                Filter.ExpressionType.EQ,
+                new Filter.Key("status"),
+                new Filter.Value("ACTIVE"));
+
+        Filter.Expression scopeFilter = new Filter.Expression(
+                Filter.ExpressionType.EQ,
+                new Filter.Key("scope"),
+                new Filter.Value("GLOBAL"));
+        if (scmConfigId != null) {
+            Filter.Expression scmScopeFilter = new Filter.Expression(
+                    Filter.ExpressionType.AND,
+                    new Filter.Expression(Filter.ExpressionType.EQ,
+                            new Filter.Key("scope"),
+                            new Filter.Value("SCM")),
+                    new Filter.Expression(Filter.ExpressionType.EQ,
+                            new Filter.Key("scm_config_id"),
+                            new Filter.Value(String.valueOf(scmConfigId))));
+            scopeFilter = new Filter.Expression(Filter.ExpressionType.OR, scopeFilter, scmScopeFilter);
+        }
+
+        Filter.Expression result = new Filter.Expression(Filter.ExpressionType.AND, activeFilter, scopeFilter);
+        if (categories != null && !categories.isEmpty()) {
+            Filter.Expression categoryFilter = new Filter.Expression(
+                    Filter.ExpressionType.IN,
+                    new Filter.Key("category"),
+                    new Filter.Value(categories));
+            result = new Filter.Expression(Filter.ExpressionType.AND, result, categoryFilter);
+        }
+        return result;
     }
 
     private void putIfNotNull(Map<String, Object> meta, String key, Object value) {

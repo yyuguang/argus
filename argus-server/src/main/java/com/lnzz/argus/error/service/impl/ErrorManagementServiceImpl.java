@@ -1,8 +1,10 @@
 package com.lnzz.argus.error.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.lnzz.argus.common.constant.NotificationConstants;
+import com.lnzz.argus.common.enums.AnalysisDecision;
+import com.lnzz.argus.common.enums.ProcessingStatus;
+import com.lnzz.argus.common.enums.SeverityLevel;
 import com.lnzz.argus.common.exception.BizException;
 import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
@@ -13,7 +15,6 @@ import com.lnzz.argus.error.mapper.ErrorAnalysisMapper;
 import com.lnzz.argus.error.mapper.ErrorAnalysisTaskMapper;
 import com.lnzz.argus.error.mapper.ErrorContextLogMapper;
 import com.lnzz.argus.error.mapper.ErrorEventMapper;
-import com.lnzz.argus.common.enums.ProcessingStatus;
 import com.lnzz.argus.error.service.ErrorAnalysisService;
 import com.lnzz.argus.error.service.ErrorManagementService;
 import com.lnzz.argus.knowledge.entity.KnowledgeEntry;
@@ -22,6 +23,7 @@ import com.lnzz.argus.notification.entity.NotificationRecord;
 import com.lnzz.argus.notification.mapper.NotificationRecordMapper;
 import com.lnzz.argus.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +37,7 @@ import java.util.Map;
  * @author lnzz
  * @since 1.0.0
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ErrorManagementServiceImpl implements ErrorManagementService {
@@ -51,44 +54,22 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
     @Override
     public Page<ErrorEvent> queryEvents(long pageNo, long pageSize, String appName, String environment,
                                         String severity, String status, String keyword) {
-        LambdaQueryWrapper<ErrorEvent> wrapper = new LambdaQueryWrapper<ErrorEvent>()
-                .eq(hasText(appName), ErrorEvent::getAppName, appName)
-                .eq(hasText(environment), ErrorEvent::getEnvironment, environment)
-                .eq(hasText(severity), ErrorEvent::getSeverity, severity)
-                .eq(hasText(status), ErrorEvent::getProcessingStatus, status)
-                .and(hasText(keyword), query -> query
-                        .like(ErrorEvent::getErrorMessage, keyword)
-                        .or()
-                        .like(ErrorEvent::getErrorFingerprint, keyword)
-                        .or()
-                        .like(ErrorEvent::getClassName, keyword)
-                        .or()
-                        .like(ErrorEvent::getInterfaceRef, keyword))
-                .orderByDesc(ErrorEvent::getLastOccurredAt)
-                .orderByDesc(ErrorEvent::getOccurredAt)
-                .orderByDesc(ErrorEvent::getId);
-        return errorEventMapper.selectPage(new Page<>(pageNo, pageSize), wrapper);
+        log.debug("查询错误事件: pageNo={}, pageSize={}, appName={}, environment={}, severity={}, status={}, keyword={}",
+                pageNo, pageSize, appName, environment, severity, status, keyword);
+        return errorEventMapper.queryEvents(pageNo, pageSize, appName, environment, severity, status, keyword);
     }
 
     @Override
     public Map<String, Object> getDetail(Long eventId) {
         ErrorEvent event = requireEvent(eventId);
-        ErrorAnalysis analysis = errorAnalysisMapper.selectOne(new LambdaQueryWrapper<ErrorAnalysis>()
-                .eq(ErrorAnalysis::getErrorEventId, eventId)
-                .orderByDesc(ErrorAnalysis::getCreateTime)
-                .last("LIMIT 1"));
-        List<ErrorContextLog> contextLogs = contextLogMapper.selectList(new LambdaQueryWrapper<ErrorContextLog>()
-                .eq(ErrorContextLog::getErrorEventId, eventId)
-                .orderByAsc(ErrorContextLog::getLogTime)
-                .last("LIMIT 50"));
-        List<NotificationRecord> notifications = notificationRecordMapper.selectList(
-                new LambdaQueryWrapper<NotificationRecord>()
-                        .eq(NotificationRecord::getRefType, "ERROR_EVENT")
-                        .eq(NotificationRecord::getRefId, eventId)
-                        .orderByDesc(NotificationRecord::getCreateTime)
-                        .last("LIMIT 20"));
+        ErrorAnalysis analysis = errorAnalysisMapper.findLatestByEventId(eventId);
+        List<ErrorContextLog> contextLogs = contextLogMapper.findByEventId(eventId, 50);
+        List<NotificationRecord> notifications = notificationRecordMapper.findByRef(
+                NotificationConstants.REF_TYPE_ERROR_EVENT, eventId, 20);
         List<KnowledgeEntry> knowledgeMatches = knowledgeService.findSimilar(event, 5);
         List<ErrorAnalysisTask> analysisTasks = listAnalysisTasks(eventId);
+        log.debug("查询错误详情: eventId={}, contextLogCount={}, notificationCount={}, taskCount={}",
+                eventId, contextLogs.size(), notifications.size(), analysisTasks.size());
 
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("event", event);
@@ -103,40 +84,31 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
 
     @Override
     public List<ErrorAnalysisTask> listAnalysisTasks(Long eventId) {
-        return errorAnalysisTaskMapper.selectList(new LambdaQueryWrapper<ErrorAnalysisTask>()
-                .eq(ErrorAnalysisTask::getErrorEventId, eventId)
-                .orderByDesc(ErrorAnalysisTask::getCreateTime)
-                .orderByDesc(ErrorAnalysisTask::getId));
+        return errorAnalysisTaskMapper.findByEventId(eventId);
     }
 
     @Override
     public List<ErrorEvent> listByFingerprint(String fingerprint) {
-        return errorEventMapper.selectList(new LambdaQueryWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getErrorFingerprint, fingerprint)
-                .orderByDesc(ErrorEvent::getLastOccurredAt)
-                .orderByDesc(ErrorEvent::getOccurredAt)
-                .last("LIMIT 100"));
+        log.debug("按指纹查询错误事件: fingerprint={}", fingerprint);
+        return errorEventMapper.findByFingerprint(fingerprint, 100);
     }
 
     @Override
     public Map<String, Object> getStats() {
-        long total = errorEventMapper.selectCount(null);
-        long p0 = countBySeverity("P0");
-        long p1 = countBySeverity("P1");
-        long p2 = countBySeverity("P2");
-        long p3 = countBySeverity("P3");
-        long unanalyzed = errorEventMapper.selectCount(new LambdaQueryWrapper<ErrorEvent>()
-                .and(query -> query.eq(ErrorEvent::getAnalyzed, false).or().isNull(ErrorEvent::getAnalyzed)));
-        long ignored = errorEventMapper.selectCount(new LambdaQueryWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getProcessingStatus, "IGNORED"));
-        long falsePositive = errorEventMapper.selectCount(new LambdaQueryWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getProcessingStatus, "FALSE_POSITIVE"));
+        long total = errorEventMapper.countAll();
+        long p0 = countBySeverity(SeverityLevel.P0.getCode());
+        long p1 = countBySeverity(SeverityLevel.P1.getCode());
+        long p2 = countBySeverity(SeverityLevel.P2.getCode());
+        long p3 = countBySeverity(SeverityLevel.P3.getCode());
+        long unanalyzed = errorEventMapper.countUnanalyzed();
+        long ignored = errorEventMapper.countByProcessingStatus(ProcessingStatus.IGNORED.getCode());
+        long falsePositive = errorEventMapper.countByProcessingStatus(ProcessingStatus.FALSE_POSITIVE.getCode());
 
         Map<String, Object> severityCounts = new LinkedHashMap<>();
-        severityCounts.put("P0", p0);
-        severityCounts.put("P1", p1);
-        severityCounts.put("P2", p2);
-        severityCounts.put("P3", p3);
+        severityCounts.put(SeverityLevel.P0.getCode(), p0);
+        severityCounts.put(SeverityLevel.P1.getCode(), p1);
+        severityCounts.put(SeverityLevel.P2.getCode(), p2);
+        severityCounts.put(SeverityLevel.P3.getCode(), p3);
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("total", total);
@@ -144,6 +116,8 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
         stats.put("ignored", ignored);
         stats.put("falsePositive", falsePositive);
         stats.put("severityCounts", severityCounts);
+        log.debug("错误事件统计: total={}, unanalyzed={}, ignored={}, falsePositive={}",
+                total, unanalyzed, ignored, falsePositive);
         return stats;
     }
 
@@ -152,26 +126,20 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
     public Map<String, Object> analyze(Long eventId, boolean resetAnalyzed) {
         ErrorEvent event = requireEvent(eventId);
         if (resetAnalyzed) {
-            errorEventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
-                    .eq(ErrorEvent::getId, eventId)
-                    .set(ErrorEvent::getAnalyzed, false)
-                    .set(ErrorEvent::getProcessingStatus, ProcessingStatus.ANALYZING.getCode()));
+            errorEventMapper.updateAnalysisState(eventId, false, ProcessingStatus.ANALYZING.getCode());
         }
         errorAnalysisService.analyzeEvent(eventId, resetAnalyzed ? "MANUAL_RETRY" : "MANUAL");
+        log.info("手动提交错误分析: eventId={}, resetAnalyzed={}", event.getId(), resetAnalyzed);
         return Map.of("eventId", event.getId(), "status", "ANALYSIS_SUBMITTED");
     }
 
     @Override
     public Map<String, Object> retryNotify(Long eventId) {
         ErrorEvent event = requireEvent(eventId);
-        ErrorAnalysis analysis = errorAnalysisMapper.selectOne(new LambdaQueryWrapper<ErrorAnalysis>()
-                .eq(ErrorAnalysis::getErrorEventId, eventId)
-                .orderByDesc(ErrorAnalysis::getCreateTime)
-                .last("LIMIT 1"));
+        ErrorAnalysis analysis = errorAnalysisMapper.findLatestByEventId(eventId);
         boolean sent = notificationService.sendErrorAlert(event, analysis);
-        errorEventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getId, eventId)
-                .set(ErrorEvent::getNotified, sent));
+        errorEventMapper.updateNotified(eventId, sent);
+        log.info("手动重试错误通知: eventId={}, sent={}", eventId, sent);
         return Map.of("eventId", eventId, "status", sent ? "NOTIFIED" : "NOTIFY_SKIPPED");
     }
 
@@ -183,6 +151,7 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
         updateEventStatus(eventId, ProcessingStatus.IGNORED.getCode(), message);
         event.setProcessingStatus(ProcessingStatus.IGNORED.getCode());
         event.setSeverityReason(message);
+        log.info("人工忽略错误事件: eventId={}, operator={}", eventId, operator);
         return event;
     }
 
@@ -191,14 +160,12 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
     public ErrorEvent markFalsePositive(Long eventId, String operator, String reason) {
         ErrorEvent event = requireEvent(eventId);
         String message = actionReason("人工标记误报", operator, reason);
-        errorEventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getId, eventId)
-                .set(ErrorEvent::getProcessingStatus, ProcessingStatus.FALSE_POSITIVE.getCode())
-                .set(ErrorEvent::getAnalysisDecision, "AGGREGATE_ONLY")
-                .set(ErrorEvent::getSeverityReason, message));
+        errorEventMapper.markFalsePositive(eventId, ProcessingStatus.FALSE_POSITIVE.getCode(),
+                AnalysisDecision.AGGREGATE_ONLY.getCode(), message);
         event.setProcessingStatus(ProcessingStatus.FALSE_POSITIVE.getCode());
-        event.setAnalysisDecision("AGGREGATE_ONLY");
+        event.setAnalysisDecision(AnalysisDecision.AGGREGATE_ONLY.getCode());
         event.setSeverityReason(message);
+        log.info("人工标记错误事件为误报: eventId={}, operator={}", eventId, operator);
         return event;
     }
 
@@ -217,11 +184,12 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
         result.put("eventId", eventId);
         result.put("analysis", analysis);
         result.put("status", "MANUAL_CONCLUSION_SAVED");
+        log.info("人工补充错误分析结论: eventId={}", eventId);
         return result;
     }
 
     private ErrorEvent requireEvent(Long eventId) {
-        ErrorEvent event = errorEventMapper.selectById(eventId);
+        ErrorEvent event = errorEventMapper.findById(eventId);
         if (event == null) {
             throw new BizException(ResultCode.NOT_FOUND, "错误事件不存在: " + eventId);
         }
@@ -229,8 +197,7 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
     }
 
     private long countBySeverity(String severity) {
-        return errorEventMapper.selectCount(new LambdaQueryWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getSeverity, severity));
+        return errorEventMapper.countBySeverity(severity);
     }
 
     private Map<String, Object> buildSourceLocationSummary(ErrorEvent event) {
@@ -246,10 +213,7 @@ public class ErrorManagementServiceImpl implements ErrorManagementService {
     }
 
     private void updateEventStatus(Long eventId, String status, String reason) {
-        errorEventMapper.update(null, new LambdaUpdateWrapper<ErrorEvent>()
-                .eq(ErrorEvent::getId, eventId)
-                .set(ErrorEvent::getProcessingStatus, status)
-                .set(ErrorEvent::getSeverityReason, reason));
+        errorEventMapper.updateStatus(eventId, status, reason);
     }
 
     private String actionReason(String action, String operator, String reason) {

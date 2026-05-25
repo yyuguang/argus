@@ -1,5 +1,10 @@
 package com.lnzz.argus.review.service;
 
+import com.lnzz.argus.codeindex.dto.req.CodeIndexScanReqDTO;
+import com.lnzz.argus.codeindex.dto.res.CodeIndexSummaryResDTO;
+import com.lnzz.argus.codeindex.service.CodeIndexScanService;
+import com.lnzz.argus.codeindex.service.CodeIndexService;
+import com.lnzz.argus.codeindex.support.CodeIndexConstants;
 import com.lnzz.argus.notification.service.NotificationService;
 import com.lnzz.argus.review.ai.AiReviewEngine;
 import com.lnzz.argus.review.ai.CodingStandardsLoader;
@@ -63,6 +68,8 @@ public class ReviewExecutor {
     private final ReviewReportFormatter reportFormatter;
     private final NotificationService notificationService;
     private final VectorKnowledgeService vectorKnowledgeService;
+    private final CodeIndexService codeIndexService;
+    private final CodeIndexScanService codeIndexScanService;
     @Qualifier("reviewFileExecutor")
     private final Executor reviewFileExecutor;
     @Qualifier("reviewExecutorPool")
@@ -116,10 +123,16 @@ public class ReviewExecutor {
                 return;
             }
 
-            // Step 3: 构建评审上下文（含 Token 预算分配）
             String reviewRef = task.getLastCommitSha() != null && !task.getLastCommitSha().isBlank()
                     ? task.getLastCommitSha()
                     : task.getSourceBranch();
+            String indexWarning = ensureReviewCodeIndex(scmConfig, task, filteredDiffs, reviewRef);
+            if (indexWarning != null) {
+                skippedReasons.add(indexWarning);
+            }
+            degradationNote = buildDegradationNote(skippedReasons);
+
+            // Step 3: 构建评审上下文（含 Token 预算分配）
             List<ReviewContext> contexts = contextBuilder.buildReviewContexts(
                     scmService, scmConfig, task, filteredDiffs, reviewRef);
 
@@ -135,11 +148,11 @@ public class ReviewExecutor {
             // Step 0.5: 发布“评审中”进度评论
             publishProgressComment(task, scmConfig, scmService, reviewConfig);
 
-            // Step 4: 加载编码规范
+            // Step 4: 加载历史编码规范兜底内容，主链优先走规则检索服务。
             String codingStandards = codingStandardsLoader.loadCodingStandards();
 
             // Step 5: 对每个文件执行 AI 评审
-            List<FileReviewResult> fileResults = executeFileReviews(contexts, codingStandards, reviewConfig);
+            List<FileReviewResult> fileResults = executeFileReviews(contexts, codingStandards, reviewConfig, scmConfig.getId());
             List<ScoreCalculator.ScoreResult> allScores = new ArrayList<>();
             List<AiReviewEngine.ReviewResult.Issue> allIssues = new ArrayList<>();
             int totalTokens = 0;
@@ -192,6 +205,58 @@ public class ReviewExecutor {
         }
     }
 
+    private String ensureReviewCodeIndex(ScmConfig scmConfig,
+                                         ReviewTask task,
+                                         List<DiffFile> filteredDiffs,
+                                         String reviewRef) {
+        if (scmConfig == null || scmConfig.getId() == null || task == null) {
+            return null;
+        }
+        if (!hasText(task.getLastCommitSha())) {
+            log.debug("评审任务缺少 lastCommitSha，跳过源码索引准备: taskId={}", task.getId());
+            return null;
+        }
+        String branchName = firstText(task.getSourceBranch(), task.getTargetBranch(), CodeIndexConstants.DEFAULT_BRANCH);
+        try {
+            CodeIndexSummaryResDTO existingIndex = codeIndexService.getSuccessfulIndexByCommit(
+                    scmConfig.getId(), task.getLastCommitSha());
+            if (existingIndex != null) {
+                log.info("评审源码索引已存在，跳过重复扫描: taskId={}, indexId={}, commit={}",
+                        task.getId(), existingIndex.getIndexId(), task.getLastCommitSha());
+                return null;
+            }
+
+            CodeIndexScanReqDTO requestDTO = new CodeIndexScanReqDTO();
+            requestDTO.setBranchName(branchName);
+            requestDTO.setCommitSha(task.getLastCommitSha());
+            requestDTO.setScanType(CodeIndexConstants.ScanType.INCREMENTAL);
+            requestDTO.setReason("REVIEW_PREPARE");
+            CodeIndexSummaryResDTO scanResult = codeIndexScanService.scanIncremental(scmConfig, requestDTO, filteredDiffs);
+            if (scanResult == null) {
+                log.warn("评审源码索引准备未返回结果，降级继续: taskId={}, commit={}", task.getId(), reviewRef);
+                return "`源码索引` — 准备未返回结果，已降级为当前文件上下文";
+            }
+            if (!isUsableIndexStatus(scanResult.getScanStatus())) {
+                log.warn("评审源码索引准备未成功，降级继续: taskId={}, commit={}, status={}, error={}",
+                        task.getId(), reviewRef, scanResult.getScanStatus(), scanResult.getLatestErrorMessage());
+                return "`源码索引` — 准备失败，已降级为当前文件上下文";
+            }
+            log.info("评审源码索引准备完成: taskId={}, indexId={}, commit={}, status={}",
+                    task.getId(), scanResult.getIndexId(), scanResult.getCommitSha(), scanResult.getScanStatus());
+            return null;
+        } catch (Exception e) {
+            log.warn("评审源码索引准备异常，降级继续: taskId={}, commit={}, error={}",
+                    task.getId(), reviewRef, e.getMessage());
+            log.debug("评审源码索引准备异常详情: taskId={}, commit={}", task.getId(), reviewRef, e);
+            return "`源码索引` — 准备异常，已降级为当前文件上下文";
+        }
+    }
+
+    private boolean isUsableIndexStatus(String scanStatus) {
+        return CodeIndexConstants.ScanStatus.SUCCESS.equals(scanStatus)
+                || CodeIndexConstants.ScanStatus.PARTIAL.equals(scanStatus);
+    }
+
     /**
      * 无 Java 文件变更时的快速完成
      */
@@ -209,7 +274,8 @@ public class ReviewExecutor {
 
     private List<FileReviewResult> executeFileReviews(List<ReviewContext> contexts,
                                                       String codingStandards,
-                                                      ReviewConfig reviewConfig) {
+                                                      ReviewConfig reviewConfig,
+                                                      Long scmConfigId) {
         int parallelism = reviewConfig.getAsync().getThreadPoolSize();
         parallelism = Math.max(1, Math.min(parallelism, contexts.size()));
 
@@ -217,7 +283,9 @@ public class ReviewExecutor {
         for (int start = 0; start < contexts.size(); start += parallelism) {
             int end = Math.min(start + parallelism, contexts.size());
             List<CompletableFuture<FileReviewResult>> futures = contexts.subList(start, end).stream()
-                    .map(context -> CompletableFuture.supplyAsync(() -> reviewSingleFile(context, codingStandards, reviewConfig), reviewFileExecutor))
+                    .map(context -> CompletableFuture.supplyAsync(
+                            () -> reviewSingleFile(context, codingStandards, reviewConfig, scmConfigId),
+                            reviewFileExecutor))
                     .toList();
             for (CompletableFuture<FileReviewResult> future : futures) {
                 results.add(future.join());
@@ -226,9 +294,12 @@ public class ReviewExecutor {
         return results;
     }
 
-    private FileReviewResult reviewSingleFile(ReviewContext context, String codingStandards, ReviewConfig reviewConfig) {
-        String prompt = promptBuilder.buildReviewPrompt(context, codingStandards, reviewConfig);
-        AiReviewEngine.ReviewResult reviewResult = aiReviewEngine.executeReview(prompt);
+    private FileReviewResult reviewSingleFile(ReviewContext context,
+                                              String codingStandards,
+                                              ReviewConfig reviewConfig,
+                                              Long scmConfigId) {
+        String prompt = promptBuilder.buildReviewPrompt(context, codingStandards, reviewConfig, scmConfigId);
+        AiReviewEngine.ReviewResult reviewResult = aiReviewEngine.executeReview(prompt, scmConfigId);
         normalizeIssues(reviewResult, context.getFilePath());
         ScoreCalculator.ScoreResult scoreResult = scoreCalculator.calculateScore(reviewResult, reviewConfig);
         log.info("文件评审完成: file={}, score={}, issues={}",
@@ -488,6 +559,17 @@ public class ReviewExecutor {
 
                 问题清单已经发布，本次未能追加综合评分，请优先处理已识别问题。
                 """.formatted(task.getMrIid(), task.getMrTitle(), task.getAuthorName(), normalizedReason);
+    }
+
+    private String firstText(String first, String second, String fallback) {
+        if (hasText(first)) {
+            return first;
+        }
+        return hasText(second) ? second : fallback;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String resolveAuthorId(ReviewTask task) {

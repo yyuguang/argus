@@ -12,15 +12,15 @@ import com.lnzz.argus.datamonitor.mapper.DbLockEventMapper;
 import com.lnzz.argus.datamonitor.mapper.LogQualityIssueMapper;
 import com.lnzz.argus.datamonitor.mapper.SlowSqlEventMapper;
 import com.lnzz.argus.datamonitor.service.DataMonitorAlertService;
+import com.lnzz.argus.notification.service.ScmNotificationDispatcher;
 import com.lnzz.argus.notification.entity.NotificationRecord;
 import com.lnzz.argus.common.enums.NotificationStatus;
 import com.lnzz.argus.notification.mapper.NotificationRecordMapper;
-import com.lnzz.argus.notification.service.WechatWebhookClient;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.mapper.ScmConfigMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,6 +32,7 @@ import java.util.List;
  * @author lnzz
  * @since 1.0.0
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DataMonitorAlertServiceImpl implements DataMonitorAlertService {
@@ -43,7 +44,7 @@ public class DataMonitorAlertServiceImpl implements DataMonitorAlertService {
     private final DataMonitorConfigMapper dataMonitorConfigMapper;
     private final ScmConfigMapper scmConfigMapper;
     private final NotificationRecordMapper notificationRecordMapper;
-    private final WechatWebhookClient wechatWebhookClient;
+    private final ScmNotificationDispatcher scmNotificationDispatcher;
 
     @Override
     public List<DataMonitorAlertResult> alertPending() {
@@ -141,16 +142,36 @@ public class DataMonitorAlertServiceImpl implements DataMonitorAlertService {
                                         String content) {
         DataMonitorConfig monitorConfig = monitorConfigId == null ? null : dataMonitorConfigMapper.selectById(monitorConfigId);
         if (monitorConfig == null) {
+            log.info("数据监控告警跳过: refType={}, refId={}, reason=noMonitorConfig", refType, refId);
             return new DataMonitorAlertResult(refType, refId, false, "未找到监控配置");
         }
         ScmConfig scmConfig = scmConfigMapper.selectById(monitorConfig.getScmConfigId());
-        if (scmConfig == null || !scmConfig.isWechatNotificationEnabled()
-                || !StringUtils.hasText(scmConfig.getWechatNotifyWebhook())) {
-            return new DataMonitorAlertResult(refType, refId, false, "SCM 企业微信通知未配置或未启用");
+        if (scmConfig == null) {
+            log.info("数据监控告警跳过: refType={}, refId={}, scmConfigId={}, reason=noScmConfig",
+                    refType, refId, monitorConfig.getScmConfigId());
+            return new DataMonitorAlertResult(refType, refId, false, "未找到 SCM 配置");
         }
-        boolean sent = wechatWebhookClient.sendMarkdown("data-monitor", content, scmConfig.getWechatNotifyWebhook());
-        saveRecord(refType, refId, dedupKey, content, sent);
-        return new DataMonitorAlertResult(refType, refId, sent, sent ? "发送成功" : "发送失败");
+        log.info("开始发送数据监控告警: refType={}, refId={}, monitorConfigId={}, scmConfigId={}",
+                refType, refId, monitorConfig.getId(), scmConfig.getId());
+        ScmNotificationDispatcher.DispatchResult dispatchResult = scmNotificationDispatcher.dispatchMarkdown(
+                scmConfig,
+                null,
+                "data-monitor",
+                "Argus 数据监控告警",
+                dedupKey + "\n" + content,
+                "DATA_MONITOR_ALERT",
+                refId,
+                refType,
+                null);
+        if (!dispatchResult.success()) {
+            log.info("数据监控告警未发送: refType={}, refId={}, scmConfigId={}, reason={}",
+                    refType, refId, scmConfig.getId(), dispatchResult.message());
+        } else {
+            log.info("数据监控告警发送成功: refType={}, refId={}, scmConfigId={}, result={}",
+                    refType, refId, scmConfig.getId(), dispatchResult.message());
+        }
+        return new DataMonitorAlertResult(refType, refId, dispatchResult.success(),
+                dispatchResult.success() ? "发送成功" : dispatchResult.message());
     }
 
     private boolean isRecentlySent(String refType, Long refId, String dedupKey, int minutes) {
@@ -162,19 +183,6 @@ public class DataMonitorAlertServiceImpl implements DataMonitorAlertService {
                         .or()
                         .like(NotificationRecord::getContentSummary, dedupKey)));
         return count != null && count > 0;
-    }
-
-    private void saveRecord(String refType, Long refId, String dedupKey, String content, boolean sent) {
-        NotificationRecord record = new NotificationRecord();
-        record.setType("DATA_MONITOR_ALERT");
-        record.setChannel("WECHAT");
-        record.setRefType(refType);
-        record.setRefId(refId);
-        record.setContentSummary(truncate(dedupKey + "\n" + content, 500));
-        record.setStatus(sent ? NotificationStatus.SENT.getCode() : NotificationStatus.FAILED.getCode());
-        record.setRetryCount(0);
-        record.setSentAt(sent ? LocalDateTime.now() : null);
-        notificationRecordMapper.insert(record);
     }
 
     private DataMonitorConfig findMonitorConfig(String appName, String environment) {

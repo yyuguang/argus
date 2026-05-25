@@ -1,5 +1,6 @@
 package com.lnzz.argus.notification.service;
 
+import com.lnzz.argus.common.constant.NotificationConstants;
 import com.lnzz.argus.error.entity.ErrorEvent;
 import com.lnzz.argus.review.config.ReviewConfig;
 import lombok.extern.slf4j.Slf4j;
@@ -44,8 +45,8 @@ public class NotificationRouter {
         boolean shouldNotify = route.isEnabled() && !"suppress".equalsIgnoreCase(route.getPriority());
         log.debug("SCM 通知路由匹配: severity={}, channel={}, priority={}, shouldNotify={}",
                 severity, route.getChannel(), route.getPriority(), shouldNotify);
-        return new RouteResult(defaultIfBlank(route.getChannel(), "default"),
-                defaultIfBlank(route.getPriority(), "normal"), shouldNotify);
+        return new RouteResult(defaultIfBlank(route.getChannel(), NotificationConstants.CHANNEL_DEFAULT),
+                defaultIfBlank(route.getPriority(), NotificationConstants.PRIORITY_NORMAL), shouldNotify);
     }
 
     private ReviewConfig.ErrorAlertRouteConfig resolveRouteConfig(String severity,
@@ -63,10 +64,14 @@ public class NotificationRouter {
 
     private ReviewConfig.ErrorAlertRouteConfig defaultRoute(String severity) {
         return switch (severity) {
-            case "P0", "P1" -> new ReviewConfig.ErrorAlertRouteConfig(true, "critical", "urgent");
-            case "P2" -> new ReviewConfig.ErrorAlertRouteConfig(true, "default", "normal");
-            case "P3" -> new ReviewConfig.ErrorAlertRouteConfig(false, "default", "low");
-            default -> new ReviewConfig.ErrorAlertRouteConfig(true, "default", "normal");
+            case "P0", "P1" -> new ReviewConfig.ErrorAlertRouteConfig(true,
+                    NotificationConstants.CHANNEL_CRITICAL, NotificationConstants.PRIORITY_URGENT);
+            case "P2" -> new ReviewConfig.ErrorAlertRouteConfig(true,
+                    NotificationConstants.CHANNEL_DEFAULT, NotificationConstants.PRIORITY_NORMAL);
+            case "P3" -> new ReviewConfig.ErrorAlertRouteConfig(false,
+                    NotificationConstants.CHANNEL_DEFAULT, NotificationConstants.PRIORITY_LOW);
+            default -> new ReviewConfig.ErrorAlertRouteConfig(true,
+                    NotificationConstants.CHANNEL_DEFAULT, NotificationConstants.PRIORITY_NORMAL);
         };
     }
 

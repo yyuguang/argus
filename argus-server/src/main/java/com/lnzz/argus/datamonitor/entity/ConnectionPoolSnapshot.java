@@ -66,6 +66,9 @@ public class ConnectionPoolSnapshot extends BaseEntity {
     /** 风险等级 */
     private String riskLevel;
 
+    /** 风险原因分析 */
+    private String riskReason;
+
     /** 采集时间 */
     private LocalDateTime collectedAt;
 }

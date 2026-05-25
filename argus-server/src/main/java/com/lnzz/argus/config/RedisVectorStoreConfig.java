@@ -81,4 +81,27 @@ public class RedisVectorStoreConfig {
                 .initializeSchema(true)
                 .build();
     }
+
+    /**
+     * 规则文档分块向量存储（Phase 5）
+     */
+    @Bean
+    public RedisVectorStore ruleDocumentVectorStore(JedisPooled jedisPooled, EmbeddingModel embeddingModel) {
+        return RedisVectorStore.builder(jedisPooled, embeddingModel)
+                .indexName("idx:rule:document:chunk")
+                .prefix("rule:document:chunk:")
+                .contentFieldName("content_text")
+                .embeddingFieldName("embedding")
+                .vectorAlgorithm(RedisVectorStore.Algorithm.FLAT)
+                .metadataFields(java.util.List.of(
+                        MetadataField.tag("document_id"),
+                        MetadataField.tag("category"),
+                        MetadataField.tag("scope"),
+                        MetadataField.tag("scm_config_id"),
+                        MetadataField.tag("status"),
+                        MetadataField.tag("version_no")
+                ))
+                .initializeSchema(true)
+                .build();
+    }
 }

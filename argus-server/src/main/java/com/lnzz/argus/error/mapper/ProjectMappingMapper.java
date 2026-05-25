@@ -12,4 +12,14 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface ProjectMappingMapper extends BaseMapper<ProjectMapping> {
+
+    /**
+     * 按主键查询应用映射。
+     *
+     * @param id 应用映射 ID
+     * @return 应用映射
+     */
+    default ProjectMapping findById(Long id) {
+        return selectById(id);
+    }
 }

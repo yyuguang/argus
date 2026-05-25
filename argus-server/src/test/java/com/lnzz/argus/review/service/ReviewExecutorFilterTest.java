@@ -19,7 +19,8 @@ class ReviewExecutorFilterTest {
 
     @BeforeEach
     void setUp() {
-        executor = new ReviewExecutor(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        executor = new ReviewExecutor(null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null);
         filter = ReviewConfig.defaults().getFileFilter();
     }
 
@@ -120,7 +121,8 @@ class ReviewExecutorFilterTest {
     @Test
     @DisplayName("buildDegradationNote 空原因返回空字符串")
     void degradationNoteEmpty() {
-        ReviewExecutor exec = new ReviewExecutor(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        ReviewExecutor exec = new ReviewExecutor(null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null);
         // 反射不方便，改为直接测试 method 行为 — 通过 filterReviewableFiles 间接验证
         List<String> skipped = new ArrayList<>();
         List<DiffFile> result = executor.filterReviewableFiles(

@@ -14,6 +14,7 @@ import com.lnzz.argus.review.config.ReviewConfig;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.mapper.ScmConfigMapper;
+import com.lnzz.argus.scm.service.ScmReviewConfigSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,12 +34,8 @@ import static org.mockito.Mockito.*;
 @DisplayName("NotificationServiceImpl - 仓库级评审通知控制")
 class NotificationServiceImplTest {
 
-    @Mock
-    private WechatWebhookClient wechatClient;
-    @Mock
-    private FeishuWebhookClient feishuClient;
-    @Mock
-    private DingTalkWebhookClient dingTalkWebhookClient;
+    private final ScmReviewConfigSupport realScmReviewConfigSupport = new ScmReviewConfigSupport();
+
     @Mock
     private NotificationRecordMapper recordMapper;
     @Mock
@@ -46,11 +43,15 @@ class NotificationServiceImplTest {
     @Mock
     private NotificationRouter router;
     @Mock
+    private ScmNotificationDispatcher scmNotificationDispatcher;
+    @Mock
     private AlertTemplateBuilder templateBuilder;
     @Mock
     private ProjectMappingMapper projectMappingMapper;
     @Mock
     private ScmConfigMapper scmConfigMapper;
+    @Mock
+    private ScmReviewConfigSupport scmReviewConfigSupport;
     @Mock
     private ValueOperations<String, String> valueOperations;
 
@@ -61,16 +62,15 @@ class NotificationServiceImplTest {
     void setUp() {
         properties = new NotificationProperties();
         notificationService = new NotificationServiceImpl(
-                wechatClient,
-                feishuClient,
-                dingTalkWebhookClient,
                 recordMapper,
                 redisTemplate,
                 properties,
                 router,
+                scmNotificationDispatcher,
                 templateBuilder,
                 projectMappingMapper,
-                scmConfigMapper
+                scmConfigMapper,
+                scmReviewConfigSupport
         );
         lenient().when(redisTemplate.hasKey(anyString())).thenReturn(false);
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
@@ -78,9 +78,13 @@ class NotificationServiceImplTest {
                 anyInt(), anyString(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyString()))
                 .thenReturn("review-content");
         lenient().when(templateBuilder.buildDetailedAlert(any(), any())).thenReturn("error-content");
-        lenient().when(wechatClient.sendMarkdown(anyString(), anyString(), any())).thenReturn(true);
+        lenient().when(scmNotificationDispatcher.dispatchMarkdown(any(), any(), anyString(), anyString(), anyString(),
+                        anyString(), any(), anyString(), any()))
+                .thenReturn(new ScmNotificationDispatcher.DispatchResult(true, 1, 1, "发送成功"));
         lenient().when(router.route(any(ErrorEvent.class), any(ReviewConfig.NotificationConfig.class)))
                 .thenReturn(new NotificationRouter.RouteResult("critical", "urgent", true));
+        lenient().when(scmReviewConfigSupport.resolveReviewConfig(any(ScmConfig.class)))
+                .thenAnswer(invocation -> realScmReviewConfigSupport.resolveReviewConfig(invocation.getArgument(0)));
     }
 
     @Test
@@ -95,7 +99,9 @@ class NotificationServiceImplTest {
 
         notificationService.sendReviewNotification(task, score, scmConfig, reviewConfig);
 
-        verify(wechatClient).sendMarkdown(eq("critical"), eq("review-content"), eq("https://custom-webhook"));
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), any(), eq("critical"),
+                eq("Argus 评审通知"), eq("review-content"), eq("REVIEW"),
+                eq(task.getId()), eq("REVIEW_TASK"), any());
     }
 
     @Test
@@ -110,7 +116,9 @@ class NotificationServiceImplTest {
 
         notificationService.sendReviewNotification(task, score, scmConfig, reviewConfig);
 
-        verify(wechatClient).sendMarkdown(eq("default"), eq("review-content"), eq("https://custom-webhook"));
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), any(), eq("default"),
+                eq("Argus 评审通知"), eq("review-content"), eq("REVIEW"),
+                eq(task.getId()), eq("REVIEW_TASK"), any());
     }
 
     @Test
@@ -123,7 +131,7 @@ class NotificationServiceImplTest {
         boolean sent = notificationService.sendReviewNotification(task, score, null, ReviewConfig.defaults());
 
         assertFalse(sent);
-        verify(wechatClient, never()).sendMarkdown(anyString(), anyString(), any());
+        verify(scmNotificationDispatcher, never()).dispatchMarkdown(any(), any(), anyString(), anyString(), anyString(), anyString(), any(), anyString(), any());
     }
 
     @Test
@@ -132,11 +140,16 @@ class NotificationServiceImplTest {
         ReviewTask task = createTask();
         ScoreCalculator.ScoreResult score = createScore(65, true);
         ScmConfig scmConfig = new ScmConfig();
+        when(scmNotificationDispatcher.dispatchMarkdown(eq(scmConfig), any(), anyString(), anyString(), anyString(),
+                        anyString(), any(), anyString(), any()))
+                .thenReturn(ScmNotificationDispatcher.DispatchResult.skipped("企业微信未配置 Webhook"));
 
         boolean sent = notificationService.sendReviewNotification(task, score, scmConfig, ReviewConfig.defaults());
 
         assertFalse(sent);
-        verify(wechatClient, never()).sendMarkdown(anyString(), anyString(), any());
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), any(), eq("default"),
+                eq("Argus 评审通知"), eq("review-content"), eq("REVIEW"),
+                eq(task.getId()), eq("REVIEW_TASK"), any());
     }
 
     @Test
@@ -146,9 +159,16 @@ class NotificationServiceImplTest {
         ScmConfig scmConfig = createScmConfig(0, "https://custom-webhook");
         mockProjectMappingAndScm(scmConfig);
 
-        notificationService.sendErrorAlert(event, new ErrorAnalysis());
+        when(scmNotificationDispatcher.dispatchMarkdown(eq(scmConfig), isNull(), anyString(), anyString(), anyString(),
+                        eq("ERROR_ALERT"), eq(event.getId()), eq("ERROR_EVENT"), any()))
+                .thenReturn(ScmNotificationDispatcher.DispatchResult.skipped("企业微信未启用"));
 
-        verify(wechatClient, never()).sendMarkdown(anyString(), anyString(), any());
+        boolean sent = notificationService.sendErrorAlert(event, new ErrorAnalysis());
+
+        assertFalse(sent);
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), isNull(), eq("critical"),
+                anyString(), eq("error-content"), eq("ERROR_ALERT"),
+                eq(event.getId()), eq("ERROR_EVENT"), any());
     }
 
     @Test
@@ -163,7 +183,7 @@ class NotificationServiceImplTest {
         boolean sent = notificationService.sendErrorAlert(event, new ErrorAnalysis());
 
         assertFalse(sent);
-        verify(wechatClient, never()).sendMarkdown(anyString(), anyString(), any());
+        verify(scmNotificationDispatcher, never()).dispatchMarkdown(any(), any(), anyString(), anyString(), anyString(), anyString(), any(), anyString(), any());
         ArgumentCaptor<NotificationRecord> recordCaptor = ArgumentCaptor.forClass(NotificationRecord.class);
         verify(recordMapper).insert(recordCaptor.capture());
         NotificationRecord record = recordCaptor.getValue();
@@ -182,7 +202,9 @@ class NotificationServiceImplTest {
 
         notificationService.sendErrorAlert(event, new ErrorAnalysis());
 
-        verify(wechatClient).sendMarkdown(eq("critical"), eq("error-content"), eq("https://custom-webhook"));
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), any(), eq("critical"),
+                anyString(), eq("error-content"), eq("ERROR_ALERT"),
+                eq(event.getId()), eq("ERROR_EVENT"), any());
     }
 
     @Test
@@ -230,12 +252,16 @@ class NotificationServiceImplTest {
                 }
                 """);
         mockProjectMappingAndScm(scmConfig);
-        when(wechatClient.sendMarkdown(anyString(), anyString(), any()))
-                .thenReturn(false, false, true);
 
         notificationService.sendErrorAlert(event, new ErrorAnalysis());
 
-        verify(wechatClient, times(3)).sendMarkdown(eq("critical"), eq("error-content"), eq("https://custom-webhook"));
+        ArgumentCaptor<ReviewConfig.NotificationRetryConfig> retryCaptor =
+                ArgumentCaptor.forClass(ReviewConfig.NotificationRetryConfig.class);
+        verify(scmNotificationDispatcher).dispatchMarkdown(eq(scmConfig), any(), eq("critical"),
+                anyString(), eq("error-content"), eq("ERROR_ALERT"),
+                eq(event.getId()), eq("ERROR_EVENT"), retryCaptor.capture());
+        assertEquals(2, retryCaptor.getValue().getMaxRetries());
+        assertEquals(60, retryCaptor.getValue().getTimeoutSec());
     }
 
     private ReviewTask createTask() {

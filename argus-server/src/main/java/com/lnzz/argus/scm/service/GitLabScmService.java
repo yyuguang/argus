@@ -3,18 +3,30 @@ package com.lnzz.argus.scm.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.lnzz.argus.common.exception.BizException;
+import com.lnzz.argus.common.result.ResultCode;
 import com.lnzz.argus.config.ScmProperties;
 import com.lnzz.argus.review.entity.ReviewTask;
 import com.lnzz.argus.scm.entity.ScmConfig;
 import com.lnzz.argus.scm.model.DiffFile;
 import com.lnzz.argus.scm.model.PullRequestEvent;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * GitLab 平台服务
@@ -22,11 +34,12 @@ import java.util.Map;
  * @author lnzz
  * @since 1.0.0
  */
+@Slf4j
 @Service
 public class GitLabScmService extends AbstractScmPlatformService {
 
     public GitLabScmService(ScmProperties scmProperties) {
-        super(scmProperties);
+        super(scmProperties, scmProperties == null ? null : scmProperties.getGitlab());
     }
 
     @Override
@@ -105,6 +118,132 @@ public class GitLabScmService extends AbstractScmPlatformService {
     public String getFileContent(ScmConfig config, String filePath, String ref) {
         String url = apiBaseUrl(config) + "/projects/{projectId}/repository/files/{filePath}/raw?ref={ref}";
         return doGet(url, buildHeaders(config), config.getProjectId(), encodePath(filePath), ref).getBody();
+    }
+
+    @Override
+    public List<String> listRepositoryFiles(ScmConfig config, String ref) {
+        List<String> result = new ArrayList<>();
+        int page = 1;
+        while (true) {
+            String url = apiBaseUrl(config)
+                    + "/projects/{projectId}/repository/tree?ref={ref}&recursive=true&per_page=100&page={page}";
+            ResponseEntity<String> response = doGet(url, buildHeaders(config), config.getProjectId(), ref, page);
+            JSONArray tree = JSON.parseArray(response.getBody());
+            for (int i = 0; i < tree.size(); i++) {
+                JSONObject item = tree.getJSONObject(i);
+                if ("blob".equals(item.getString("type")) && item.getString("path") != null) {
+                    result.add(item.getString("path"));
+                }
+            }
+            String nextPage = response.getHeaders().getFirst("X-Next-Page");
+            if (nextPage == null || nextPage.isBlank()) {
+                break;
+            }
+            page = Integer.parseInt(nextPage);
+        }
+        return result;
+    }
+
+    @Override
+    public boolean materializeRepositoryFiles(ScmConfig config,
+                                              String ref,
+                                              Predicate<String> fileFilter,
+                                              Path repositoryRoot,
+                                              Collection<String> loadedFilePaths,
+                                              Collection<String> failedFilePaths,
+                                              Collection<String> warnings) {
+        long startedAt = System.currentTimeMillis();
+        byte[] archiveBytes = downloadRepositoryArchive(config, ref);
+        validateArchiveSize(archiveBytes);
+        int entryCount = extractRepositoryArchive(
+                archiveBytes, repositoryRoot, fileFilter, loadedFilePaths, failedFilePaths, warnings);
+        log.info("GitLab 仓库 archive 快照物化完成, projectId={}, ref={}, entryCount={}, loadedFileCount={}, failedFileCount={}, costMs={}",
+                config.getProjectId(), ref, entryCount, loadedFilePaths.size(), failedFilePaths.size(),
+                System.currentTimeMillis() - startedAt);
+        return true;
+    }
+
+    protected byte[] downloadRepositoryArchive(ScmConfig config, String ref) {
+        String url = apiBaseUrl(config) + "/projects/{projectId}/repository/archive.zip?sha={ref}";
+        ResponseEntity<byte[]> response = doGetBytes(url, buildHeaders(config), config.getProjectId(), ref);
+        byte[] body = response.getBody();
+        if (body == null || body.length == 0) {
+            throw new BizException(ResultCode.SCM_ERROR, "GitLab repository archive 响应为空");
+        }
+        return body;
+    }
+
+    private void validateArchiveSize(byte[] archiveBytes) {
+        int maxArchiveSize = scmProperties.getGitlab().getMaxArchiveSize();
+        if (maxArchiveSize > 0 && archiveBytes.length > maxArchiveSize) {
+            throw new BizException(ResultCode.SCM_ERROR,
+                    "GitLab repository archive 超过大小限制: " + archiveBytes.length + " > " + maxArchiveSize);
+        }
+    }
+
+    private int extractRepositoryArchive(byte[] archiveBytes,
+                                         Path repositoryRoot,
+                                         Predicate<String> fileFilter,
+                                         Collection<String> loadedFilePaths,
+                                         Collection<String> failedFilePaths,
+                                         Collection<String> warnings) {
+        int entryCount = 0;
+        try (ZipInputStream zipInputStream = new ZipInputStream(new ByteArrayInputStream(archiveBytes))) {
+            ZipEntry entry;
+            while ((entry = zipInputStream.getNextEntry()) != null) {
+                entryCount++;
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                String filePath = stripArchiveRoot(entry.getName());
+                if (!isText(filePath) || (fileFilter != null && !fileFilter.test(filePath))) {
+                    continue;
+                }
+                Path targetPath = resolveArchiveTarget(repositoryRoot, filePath);
+                if (targetPath == null) {
+                    failedFilePaths.add(filePath);
+                    warnings.add("GitLab archive 包含非法文件路径: " + filePath);
+                    continue;
+                }
+                materializeArchiveEntry(zipInputStream, targetPath, filePath, loadedFilePaths, failedFilePaths, warnings);
+            }
+            return entryCount;
+        } catch (IOException e) {
+            throw new BizException(ResultCode.SCM_ERROR, "GitLab repository archive 解压失败: " + e.getMessage());
+        }
+    }
+
+    private void materializeArchiveEntry(ZipInputStream zipInputStream,
+                                         Path targetPath,
+                                         String filePath,
+                                         Collection<String> loadedFilePaths,
+                                         Collection<String> failedFilePaths,
+                                         Collection<String> warnings) {
+        try {
+            Files.createDirectories(targetPath.getParent());
+            Files.copy(zipInputStream, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            loadedFilePaths.add(filePath);
+        } catch (IOException e) {
+            failedFilePaths.add(filePath);
+            warnings.add("GitLab archive 文件写入失败: " + filePath + " - " + e.getMessage());
+        }
+    }
+
+    private String stripArchiveRoot(String entryName) {
+        if (!isText(entryName)) {
+            return "";
+        }
+        String normalizedEntryName = entryName.replace('\\', '/').replaceFirst("^/+", "");
+        int firstSlash = normalizedEntryName.indexOf('/');
+        if (firstSlash < 0 || firstSlash == normalizedEntryName.length() - 1) {
+            return "";
+        }
+        return normalizedEntryName.substring(firstSlash + 1);
+    }
+
+    private Path resolveArchiveTarget(Path repositoryRoot, String filePath) {
+        Path targetPath = repositoryRoot.resolve(filePath).normalize();
+        return targetPath.startsWith(repositoryRoot) ? targetPath : null;
     }
 
     @Override

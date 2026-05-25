@@ -1,5 +1,6 @@
 package com.lnzz.argus.error.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.lnzz.argus.error.entity.ErrorAnalysis;
 import org.apache.ibatis.annotations.Mapper;
@@ -16,6 +17,19 @@ import java.util.List;
  */
 @Mapper
 public interface ErrorAnalysisMapper extends BaseMapper<ErrorAnalysis> {
+
+    /**
+     * 查询错误事件最近一次分析结果。
+     *
+     * @param eventId 错误事件 ID
+     * @return 最近一次分析结果，未分析时返回 null
+     */
+    default ErrorAnalysis findLatestByEventId(Long eventId) {
+        return selectOne(new LambdaQueryWrapper<ErrorAnalysis>()
+                .eq(ErrorAnalysis::getErrorEventId, eventId)
+                .orderByDesc(ErrorAnalysis::getCreateTime)
+                .last("LIMIT 1"));
+    }
 
     /**
      * M5-B02: 查询同指纹的历史分析案例（最近 N 条）
